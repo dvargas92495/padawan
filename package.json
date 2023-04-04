@@ -1,0 +1,7 @@
+{
+  "name": "padawan",
+  "description": "A young apprentice, strong with the force, learning to master the ways of your repos.",
+  "dependencies": {
+    "@samepage/scripts": "^0.55.6"
+  }
+}
