@@ -2,6 +2,8 @@
   "name": "padawan",
   "description": "A young apprentice, strong with the force, learning to master the ways of your repos.",
   "dependencies": {
-    "@samepage/scripts": "^0.55.6"
+    "@octokit/rest": "^19.0.7",
+    "@samepage/backend": "^0.56.1",
+    "@samepage/scripts": "^0.56.1"
   }
 }
