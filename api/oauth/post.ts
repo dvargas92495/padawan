@@ -1,7 +1,5 @@
 import createAPIGatewayHandler from "@samepage/backend/createAPIGatewayProxyHandler";
 import axios from "axios";
-import { Octokit } from "@octokit/rest";
-import jsonwebtoken from "jsonwebtoken";
 import { S3 } from "@aws-sdk/client-s3";
 
 const logic = async (args: {
