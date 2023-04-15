@@ -27,7 +27,7 @@ const logic = async (args: Record<string, unknown>) => {
   const event = args as WebhookEvent;
   if ("action" in event && event.action === "labeled" && "issue" in event) {
     const auth = await getToken(event.installation?.id);
-    const octokit = await new Octokit({
+    const octokit = new Octokit({
       auth,
     });
     if (event.label?.name === "padawan") {
@@ -42,21 +42,26 @@ const logic = async (args: Record<string, unknown>) => {
   return { success: true };
 };
 
+const validate = (args: {
+  body: string | null;
+  headers: Record<string, string | undefined>;
+}) => {
+  const webhookSecret = process.env.WEBHOOK_SECRET;
+  if (!webhookSecret) throw new Error(`Missing Webhook Secret`);
+  if (!args.body) throw new Error(`Empty Body`);
+  const computed = crypto
+    .createHash("sha256")
+    .update(webhookSecret)
+    .update(args.body)
+    .digest("hex");
+  const actual = (
+    (args.headers["X-Hub-Signature-256"] as string) || ""
+  ).replace("sha256=", "");
+  console.log("compare hashes", computed, actual);
+  return true;
+};
+
 export default createAPIGatewayProxyHandler({
   logic,
-  validate: (args) => {
-    const webhookSecret = process.env.WEBHOOK_SECRET;
-    if (!webhookSecret) throw new Error(`Missing Webhook Secret`);
-    if (!args.body) throw new Error(`Empty Body`);
-    const computed = crypto
-      .createHash("sha256")
-      .update(webhookSecret)
-      .update(args.body)
-      .digest("hex");
-    const actual = (
-      (args.headers["X-Hub-Signature-256"] as string) || ""
-    ).replace("sha256=", "");
-    console.log("compare hashes", computed, actual);
-    return true;
-  },
+  validate,
 });
