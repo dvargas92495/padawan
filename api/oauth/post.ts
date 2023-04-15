@@ -1,11 +1,14 @@
 import createAPIGatewayHandler from "@samepage/backend/createAPIGatewayProxyHandler";
 import axios from "axios";
 import { S3 } from "@aws-sdk/client-s3";
+import { Octokit } from "@octokit/rest";
+import appClient from "src/utils/appClient";
 
 const logic = async (args: {
   code: string;
   customParams: Record<string, string>;
 }) => {
+  const s3 = new S3({});
   const { data } = await axios
     .post<{ access_token: string }>(
       `https://github.com/login/oauth/access_token`,
@@ -27,12 +30,20 @@ const logic = async (args: {
       )
     );
   const { access_token } = data;
-  await new S3({}).putObject({
+  await s3.putObject({
     Bucket: "app.davidvargas.me",
-    Key: `.secret/access-tokens/${args.customParams.installation_id}`,
+    Key: `.secret/access-tokens/${args.customParams.installation_id}/user`,
     Body: Buffer.from(access_token),
   });
-  return {};
+  const botToken = await appClient.apps.createInstallationAccessToken({
+    installation_id: parseInt(args.customParams.installation_id),
+  });
+  await s3.putObject({
+    Bucket: "app.davidvargas.me",
+    Key: `.secret/access-tokens/${args.customParams.installation_id}/bot`,
+    Body: Buffer.from(botToken.data.token),
+  });
+  return { success: true };
 };
 
 export default createAPIGatewayHandler(logic);
