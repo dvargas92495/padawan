@@ -1,49 +1,8 @@
 import createAPIGatewayProxyHandler from "@samepage/backend/createAPIGatewayProxyHandler";
 import { Octokit } from "@octokit/rest";
-import jsonwebtoken from "jsonwebtoken";
 import crypto from "crypto";
 import { WebhookEvent } from "@octokit/webhooks-types";
-import { S3 } from "@aws-sdk/client-s3";
-import { Readable } from "stream";
-import appClient from "src/utils/appClient";
-
-const getToken = (id = 0, type: "user" | "bot" = "bot") =>
-  new S3({})
-    .getObject({
-      Bucket: "app.davidvargas.me",
-      Key: `.secret/access-tokens/${id}/${type}`,
-    })
-    .then((r) => {
-      const Body = r.Body as Readable;
-      if (!Body) throw new Error(`No token found for installation ${id}`);
-      const chunks: Buffer[] = [];
-      return new Promise<string>((resolve, reject) => {
-        Body.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-        Body.on("error", (err) => reject(err));
-        Body.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      });
-    });
-
-const getInstallationToken = (
-  type: "Bot" | "User" | "Organization",
-  owner: string
-) => {
-  if (type === "Bot") {
-    return process.env.GITHUB_APP_TOKEN;
-  } else if (type === "User") {
-    return appClient.apps
-      .getUserInstallation({
-        username: owner,
-      })
-      .then((r) => getToken(r.data.id, "bot"));
-  } else {
-    return appClient.apps
-      .getOrgInstallation({
-        username: owner,
-      })
-      .then((r) => getToken(r.data.id, "bot"));
-  }
-};
+import getInstallationToken from "src/utils/getInstallationToken";
 
 const logic = async (args: Record<string, unknown>) => {
   const event = args as WebhookEvent;
