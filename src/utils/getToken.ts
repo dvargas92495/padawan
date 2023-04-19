@@ -14,7 +14,9 @@ const getToken = (id = 0, type: "user" | "bot" = "bot") =>
       return new Promise<string>((resolve, reject) => {
         Body.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
         Body.on("error", (err) => reject(err));
-        Body.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        Body.on("end", () =>
+          resolve(Buffer.concat(chunks).toString("utf8").trim())
+        );
       });
     });
 

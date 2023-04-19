@@ -3,6 +3,7 @@ import { Octokit } from "@octokit/rest";
 import crypto from "crypto";
 import { WebhookEvent } from "@octokit/webhooks-types";
 import getInstallationToken from "src/utils/getInstallationToken";
+import { Lambda } from "@aws-sdk/client-lambda";
 
 const logic = async (args: Record<string, unknown>) => {
   const event = args as WebhookEvent;
@@ -15,6 +16,18 @@ const logic = async (args: Record<string, unknown>) => {
       auth,
     });
     if (event.label?.name === "padawan") {
+      const lambda = new Lambda({});
+      await lambda.invoke({
+        FunctionName: "padawan-dev-develop",
+        Payload: Buffer.from(
+          JSON.stringify({
+            issue: event.issue?.number || 0,
+            owner: event.repository?.owner?.login || "",
+            repo: event.repository?.name || "",
+            type: event.sender.type,
+          })
+        ),
+      });
       await octokit.issues.createComment({
         owner: event.repository?.owner?.login || "",
         repo: event.repository?.name || "",
