@@ -3,12 +3,11 @@
   "description": "A young apprentice, strong with the force, learning to master the ways of your repos.",
   "dependencies": {
     "@octokit/rest": "^19.0.7",
-    "@samepage/backend": "^0.62.9",
-    "@samepage/scripts": "^0.62.8",
-    "langchain": "^0.0.56"
+    "@samepage/backend": "^0.64.0",
+    "@samepage/scripts": "^0.64.0",
+    "langchain": "0.0.56"
   },
   "devDependencies": {
-    "@octokit/webhooks-types": "^6.11.0",
-    "@types/uuid": "^9.0.1"
+    "@octokit/webhooks-types": "^6.11.0"
   }
 }
