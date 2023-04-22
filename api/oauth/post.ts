@@ -10,7 +10,7 @@ const logic = async (args: {
 }) => {
   const s3 = new S3({});
   const { data } = await axios
-    .post<{ access_token: string }>(
+    .post<{ access_token: string; refresh_token: string }>(
       `https://github.com/login/oauth/access_token`,
       {
         code: args.code,
@@ -29,11 +29,17 @@ const logic = async (args: {
         new Error(`Failed to get access token: ${e.response.data}`)
       )
     );
-  const { access_token } = data;
+  const { access_token, refresh_token, ...rest } = data;
+  console.log(rest);
   await s3.putObject({
     Bucket: "app.davidvargas.me",
     Key: `.secret/access-tokens/${args.customParams.installation_id}/user`,
     Body: Buffer.from(access_token),
+  });
+  await s3.putObject({
+    Bucket: "app.davidvargas.me",
+    Key: `.secret/access-tokens/${args.customParams.installation_id}/refresh`,
+    Body: Buffer.from(refresh_token),
   });
   const botToken = await appClient.apps.createInstallationAccessToken({
     installation_id: parseInt(args.customParams.installation_id),
