@@ -8,6 +8,7 @@
     "langchain": "0.0.56"
   },
   "devDependencies": {
-    "@octokit/webhooks-types": "^6.11.0"
+    "@octokit/webhooks-types": "^6.11.0",
+    "ts-node": "^10.9.1"
   }
 }
