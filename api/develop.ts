@@ -2,7 +2,6 @@ import type { Handler } from "aws-lambda";
 import { z } from "zod";
 import { OpenAI } from "langchain/llms/openai";
 import { PromptTemplate } from "langchain/prompts";
-import { Tool } from "langchain/tools";
 import { initializeAgentExecutor } from "langchain/agents";
 import { Octokit } from "@octokit/rest";
 import { v4 } from "uuid";
@@ -10,6 +9,51 @@ import { execSync, ChildProcess } from "child_process";
 import fs from "fs";
 import getInstallationToken from "../src/utils/getInstallationToken";
 import appClient from "../src/utils/appClient";
+import { CallbackManager, ConsoleCallbackHandler } from "./base.js";
+
+export class SingletonCallbackManager extends CallbackManager {
+    constructor() {
+        super();
+    }
+    static getInstance() {
+        if (!SingletonCallbackManager.instance) {
+            SingletonCallbackManager.instance = new SingletonCallbackManager();
+            SingletonCallbackManager.instance.addHandler(new ConsoleCallbackHandler());
+            if (typeof process !== "undefined" &&
+                // eslint-disable-next-line no-process-env
+                process.env.LANGCHAIN_HANDLER === "langchain") {
+                SingletonCallbackManager.instance.addHandler(new LangChainTracer());
+            }
+        }
+        return SingletonCallbackManager.instance;
+    }
+}
+export function getCallbackManager() {
+    return SingletonCallbackManager.getInstance();
+}
+
+class Tool {
+    constructor(verbose: boolean, callbackManager: CallbackManager) {
+        
+        this.verbose = verbose ?? (callbackManager ? true : getVerbosity
+        this.callbackManager = callbackManager ?? getCallbackManager();
+    }
+    async call(arg, verbose) {
+        const _verbose = verbose ?? this.verbose;
+        await this.callbackManager.handleToolStart({ name: this.name }, arg, _verbose);
+        let result;
+        try {
+            result = await this._call(arg);
+        }
+        catch (e) {
+            await this.callbackManager.handleToolError(e, _verbose);
+            throw e;
+        }
+        await this.callbackManager.handleToolEnd(result, _verbose);
+        return result;
+    }
+}
+
 
 class GithubCodeSearchTool extends Tool {
   name = "Github Code Search";
