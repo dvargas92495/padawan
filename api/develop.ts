@@ -1,15 +1,401 @@
 import type { Handler } from "aws-lambda";
 import { z } from "zod";
-import { OpenAI } from "langchain/llms/openai";
-import { PromptTemplate } from "langchain/prompts";
-import { LLMChain } from "langchain";
 import { Octokit } from "@octokit/rest";
-import { v4 } from "uuid";
+import { v4 as uuidv4 } from "uuid";
 import { execSync, ChildProcess } from "child_process";
 import fs from "fs";
 import getInstallationToken from "../src/utils/getInstallationToken";
 import appClient from "../src/utils/appClient";
-import { BaseLanguageModel } from "langchain/dist/base_language";
+import {
+  Configuration,
+  ConfigurationParameters,
+  CreateCompletionRequest,
+  CreateCompletionResponse,
+  CreateCompletionResponseChoicesInner,
+  OpenAIApi,
+} from "openai";
+
+// Try to remove
+import PQueueMod from "p-queue";
+import pRetry from "p-retry";
+import type { Tiktoken, TiktokenModel } from "@dqbd/tiktoken";
+
+const importTiktoken = async () => {
+  try {
+    const { encoding_for_model } = await import("@dqbd/tiktoken");
+    return { encoding_for_model };
+  } catch (error) {
+    console.log(error);
+    return { encoding_for_model: null };
+  }
+};
+
+const STATUS_NO_RETRY = [
+  400, // Bad Request
+  401, // Unauthorized
+  403, // Forbidden
+  404, // Not Found
+  405, // Method Not Allowed
+  406, // Not Acceptable
+  407, // Proxy Authentication Required
+  408, // Request Timeout
+  409, // Conflict
+];
+
+interface AsyncCallerParams {
+  /**
+   * The maximum number of concurrent calls that can be made.
+   * Defaults to `Infinity`, which means no limit.
+   */
+  maxConcurrency?: number;
+  /**
+   * The maximum number of retries that can be made for a single call,
+   * with an exponential backoff between each attempt. Defaults to 6.
+   */
+  maxRetries?: number;
+}
+
+abstract class BaseCallbackHandlerMethodsClass {
+  /**
+   * Called at the start of an LLM or Chat Model run, with the prompt(s)
+   * and the run ID.
+   */
+  handleLLMStart?(
+    llm: { name: string },
+    prompts: string[],
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called when an LLM/ChatModel in `streaming` mode produces a new token
+   */
+  handleLLMNewToken?(
+    token: string,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called if an LLM/ChatModel run encounters an error
+   */
+  handleLLMError?(
+    err: Error,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called at the end of an LLM/ChatModel run, with the output and the run ID.
+   */
+  handleLLMEnd?(
+    output: LLMResult,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called at the start of a Chain run, with the chain name and inputs
+   * and the run ID.
+   */
+  handleChainStart?(
+    chain: { name: string },
+    inputs: ChainValues,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called if a Chain run encounters an error
+   */
+  handleChainError?(
+    err: Error,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called at the end of a Chain run, with the outputs and the run ID.
+   */
+  handleChainEnd?(
+    outputs: ChainValues,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called at the start of a Tool run, with the tool name and input
+   * and the run ID.
+   */
+  handleToolStart?(
+    tool: { name: string },
+    input: string,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called if a Tool run encounters an error
+   */
+  handleToolError?(
+    err: Error,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called at the end of a Tool run, with the tool output and the run ID.
+   */
+  handleToolEnd?(
+    output: string,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  handleText?(
+    text: string,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called when an agent is about to execute an action,
+   * with the action and the run ID.
+   */
+  handleAgentAction?(
+    action: AgentAction,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+
+  /**
+   * Called when an agent finishes execution, before it exits.
+   * with the final output and the run ID.
+   */
+  handleAgentEnd?(
+    action: AgentFinish,
+    runId: string,
+    parentRunId?: string
+  ): Promise<void> | void;
+}
+
+type CallbackHandlerMethods = BaseCallbackHandlerMethodsClass;
+
+type Callbacks =
+  | CallbackManager
+  | (BaseCallbackHandler | CallbackHandlerMethods)[];
+
+interface BaseLanguageModelParams
+  extends AsyncCallerParams,
+    BaseLangChainParams {
+  callbackManager?: CallbackManager;
+}
+
+interface BaseLangChainParams {
+  verbose?: boolean;
+  callbacks?: Callbacks;
+}
+
+abstract class BaseLangChain implements BaseLangChainParams {
+  /**
+   * Whether to print out response text.
+   */
+  verbose: boolean;
+
+  callbacks?: Callbacks;
+
+  constructor(params: BaseLangChainParams) {
+    this.verbose = params.verbose || false;
+    this.callbacks = params.callbacks;
+  }
+}
+
+class AsyncCaller {
+  protected maxConcurrency: AsyncCallerParams["maxConcurrency"];
+
+  protected maxRetries: AsyncCallerParams["maxRetries"];
+
+  private queue: typeof import("p-queue")["default"]["prototype"];
+
+  constructor(params: AsyncCallerParams) {
+    this.maxConcurrency = params.maxConcurrency ?? Infinity;
+    this.maxRetries = params.maxRetries ?? 6;
+
+    this.queue = new PQueueMod({ concurrency: this.maxConcurrency });
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  call<A extends any[], T extends (...args: A) => Promise<any>>(
+    callable: T,
+    ...args: Parameters<T>
+  ): Promise<Awaited<ReturnType<T>>> {
+    return this.queue.add(
+      () =>
+        pRetry(
+          () =>
+            callable(...args).catch((error) => {
+              // eslint-disable-next-line no-instanceof/no-instanceof
+              if (error instanceof Error) {
+                throw error;
+              } else {
+                throw new Error(error);
+              }
+            }),
+          {
+            onFailedAttempt(error) {
+              if (
+                error.message.startsWith("Cancel") ||
+                error.message.startsWith("TimeoutError") ||
+                error.message.startsWith("AbortError")
+              ) {
+                throw error;
+              }
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              if ((error as any)?.code === "ECONNABORTED") {
+                throw error;
+              }
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const status = (error as any)?.response?.status;
+              if (status && STATUS_NO_RETRY.includes(+status)) {
+                throw error;
+              }
+            },
+            retries: this.maxRetries,
+            randomize: true,
+            // If needed we can change some of the defaults here,
+            // but they're quite sensible.
+          }
+        ),
+      { throwOnTimeout: true }
+    );
+  }
+
+  fetch(...args: Parameters<typeof fetch>): ReturnType<typeof fetch> {
+    return this.call(() =>
+      fetch(...args).then((res) => (res.ok ? res : Promise.reject(res)))
+    );
+  }
+}
+
+type SerializedLLM = {
+  _model: string;
+  _type: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} & Record<string, any>;
+
+const getModelNameForTiktoken = (modelName: string): TiktokenModel => {
+  if (modelName.startsWith("gpt-3.5-turbo-")) {
+    return "gpt-3.5-turbo";
+  }
+
+  if (modelName.startsWith("gpt-4-32k-")) {
+    return "gpt-4-32k";
+  }
+
+  if (modelName.startsWith("gpt-4-")) {
+    return "gpt-4";
+  }
+
+  return modelName as TiktokenModel;
+};
+
+abstract class BaseLanguageModel
+  extends BaseLangChain
+  implements BaseLanguageModelParams
+{
+  /**
+   * The async caller should be used by subclasses to make any async calls,
+   * which will thus benefit from the concurrency and retry logic.
+   */
+  caller: AsyncCaller;
+  constructor(params: BaseLanguageModelParams) {
+    super({
+      verbose: params.verbose,
+      callbacks: params.callbacks ?? params.callbackManager,
+    });
+    this.caller = new AsyncCaller(params ?? {});
+  }
+  abstract generatePrompt(
+    promptValues: BasePromptValue[],
+    stop?: string[]
+  ): Promise<LLMResult>;
+  abstract _modelType(): string;
+  abstract _llmType(): string;
+  private _encoding?: Tiktoken;
+  private _registry?: FinalizationRegistry<Tiktoken>;
+  async getNumTokens(text: string) {
+    // fallback to approximate calculation if tiktoken is not available
+    let numTokens = Math.ceil(text.length / 4);
+
+    try {
+      if (!this._encoding) {
+        const { encoding_for_model } = await importTiktoken();
+        // modelName only exists in openai subclasses, but tiktoken only supports
+        // openai tokenisers anyway, so for other subclasses we default to gpt2
+        if (encoding_for_model) {
+          this._encoding = encoding_for_model(
+            "modelName" in this
+              ? getModelNameForTiktoken(this.modelName as string)
+              : "gpt2"
+          );
+          // We need to register a finalizer to free the tokenizer when the
+          // model is garbage collected.
+          this._registry = new FinalizationRegistry((t) => t.free());
+          this._registry.register(this, this._encoding);
+        }
+      }
+
+      if (this._encoding) {
+        numTokens = this._encoding.encode(text).length;
+      }
+    } catch (error) {
+      console.warn(
+        "Failed to calculate number of tokens with tiktoken, falling back to approximate count",
+        error
+      );
+    }
+
+    return numTokens;
+  }
+
+  /**
+   * Get the identifying parameters of the LLM.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _identifyingParams(): Record<string, any> {
+    return {};
+  }
+
+  /**
+   * Return a json-like object representing this LLM.
+   */
+  serialize(): SerializedLLM {
+    return {
+      ...this._identifyingParams(),
+      _type: this._llmType(),
+      _model: this._modelType(),
+    };
+  }
+}
+
+type MessageType = "human" | "ai" | "generic" | "system";
+
+abstract class BaseChatMessage {
+  /** The text of the message. */
+  text: string;
+  /** The name of the message sender in a multi-user chat. */
+  name?: string;
+  /** The type of the message. */
+  abstract _getType(): MessageType;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+
+abstract class BasePromptValue {
+  abstract toString(): string;
+  abstract toChatMessages(): BaseChatMessage[];
+}
 
 type Generation = {
   text: string;
@@ -40,67 +426,38 @@ type AgentStep = {
   observation: string;
 };
 
-class BaseCallbackHandler {
-  alwaysVerbose: boolean;
-  ignoreLLM: boolean;
-  ignoreChain: boolean;
-  ignoreAgent: boolean;
-  constructor(
-    input: {
-      alwaysVerbose?: boolean;
-      ignoreLLM?: boolean;
-      ignoreChain?: boolean;
-      ignoreAgent?: boolean;
-    } = {}
-  ) {
-    this.alwaysVerbose = false;
-    this.ignoreLLM = false;
-    this.ignoreChain = false;
-    this.ignoreAgent = false;
+interface BaseCallbackHandlerInput {
+  ignoreLLM?: boolean;
+  ignoreChain?: boolean;
+  ignoreAgent?: boolean;
+}
+
+abstract class BaseCallbackHandler
+  extends BaseCallbackHandlerMethodsClass
+  implements BaseCallbackHandlerInput
+{
+  abstract name: string;
+
+  ignoreLLM = false;
+
+  ignoreChain = false;
+
+  ignoreAgent = false;
+
+  constructor(input?: BaseCallbackHandlerInput) {
+    super();
     if (input) {
-      this.alwaysVerbose = input.alwaysVerbose ?? this.alwaysVerbose;
       this.ignoreLLM = input.ignoreLLM ?? this.ignoreLLM;
       this.ignoreChain = input.ignoreChain ?? this.ignoreChain;
       this.ignoreAgent = input.ignoreAgent ?? this.ignoreAgent;
     }
   }
-  handleLLMStart?(
-    llm: { name: string },
-    prompts: string[],
-    verbose?: boolean
-  ): Promise<void>;
 
-  handleLLMNewToken?(token: string, verbose?: boolean): Promise<void>;
-
-  handleLLMError?(err: Error, verbose?: boolean): Promise<void>;
-
-  handleLLMEnd?(output: LLMResult, verbose?: boolean): Promise<void>;
-
-  handleChainStart?(
-    chain: { name: string },
-    inputs: ChainValues,
-    verbose?: boolean
-  ): Promise<void>;
-
-  handleChainError?(err: Error, verbose?: boolean): Promise<void>;
-
-  handleChainEnd?(outputs: ChainValues, verbose?: boolean): Promise<void>;
-
-  handleToolStart?(
-    tool: { name: string },
-    input: string,
-    verbose?: boolean
-  ): Promise<void>;
-
-  handleToolError?(err: Error, verbose?: boolean): Promise<void>;
-
-  handleToolEnd?(output: string, verbose?: boolean): Promise<void>;
-
-  handleText?(text: string, verbose?: boolean): Promise<void>;
-
-  handleAgentAction?(action: AgentAction, verbose?: boolean): Promise<void>;
-
-  handleAgentEnd?(action: AgentFinish, verbose?: boolean): Promise<void>;
+  copy(): BaseCallbackHandler {
+    return new (this.constructor as new (
+      input?: BaseCallbackHandlerInput
+    ) => BaseCallbackHandler)(this);
+  }
 }
 
 abstract class BaseCallbackManager extends BaseCallbackHandler {
@@ -110,37 +467,49 @@ abstract class BaseCallbackManager extends BaseCallbackHandler {
   }
 }
 
-class CallbackManager extends BaseCallbackManager {
-  handlers: BaseCallbackHandler[];
-  constructor() {
-    super();
-    this.handlers = [];
-  }
-  async handleLLMStart(
-    llm: { name: string },
-    prompts: string[],
-    verbose = false
-  ) {
+type BaseCallbackManagerMethods = {
+  [K in keyof CallbackHandlerMethods]?: (
+    ...args: Parameters<Required<CallbackHandlerMethods>[K]>
+  ) => Promise<unknown>;
+};
+
+class BaseRunManager {
+  constructor(
+    public readonly runId: string,
+    protected readonly handlers: BaseCallbackHandler[],
+    protected readonly inheritableHandlers: BaseCallbackHandler[],
+    protected readonly _parentRunId?: string
+  ) {}
+
+  async handleText(text: string): Promise<void> {
     await Promise.all(
       this.handlers.map(async (handler) => {
-        if (!handler.ignoreLLM && (verbose || handler.alwaysVerbose)) {
-          try {
-            await handler.handleLLMStart?.(llm, prompts);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleLLMStart: ${err}`
-            );
-          }
+        try {
+          await handler.handleText?.(text, this.runId, this._parentRunId);
+        } catch (err) {
+          console.error(
+            `Error in handler ${handler.constructor.name}, handleText: ${err}`
+          );
         }
       })
     );
   }
-  async handleLLMNewToken(token: string, verbose: boolean) {
+}
+
+class CallbackManagerForLLMRun
+  extends BaseRunManager
+  implements BaseCallbackManagerMethods
+{
+  async handleLLMNewToken(token: string): Promise<void> {
     await Promise.all(
       this.handlers.map(async (handler) => {
-        if (!handler.ignoreLLM && (verbose || handler.alwaysVerbose)) {
+        if (!handler.ignoreLLM) {
           try {
-            await handler.handleLLMNewToken?.(token);
+            await handler.handleLLMNewToken?.(
+              token,
+              this.runId,
+              this._parentRunId
+            );
           } catch (err) {
             console.error(
               `Error in handler ${handler.constructor.name}, handleLLMNewToken: ${err}`
@@ -150,12 +519,17 @@ class CallbackManager extends BaseCallbackManager {
       })
     );
   }
-  async handleLLMError(err: Error, verbose: boolean) {
+
+  async handleLLMError(err: Error | unknown): Promise<void> {
     await Promise.all(
       this.handlers.map(async (handler) => {
-        if (!handler.ignoreLLM && (verbose || handler.alwaysVerbose)) {
+        if (!handler.ignoreLLM) {
           try {
-            await handler.handleLLMError?.(err);
+            await handler.handleLLMError?.(
+              err as Error,
+              this.runId,
+              this._parentRunId
+            );
           } catch (err) {
             console.error(
               `Error in handler ${handler.constructor.name}, handleLLMError: ${err}`
@@ -165,12 +539,13 @@ class CallbackManager extends BaseCallbackManager {
       })
     );
   }
-  async handleLLMEnd(output: LLMResult, verbose: boolean) {
+
+  async handleLLMEnd(output: LLMResult): Promise<void> {
     await Promise.all(
       this.handlers.map(async (handler) => {
-        if (!handler.ignoreLLM && (verbose || handler.alwaysVerbose)) {
+        if (!handler.ignoreLLM) {
           try {
-            await handler.handleLLMEnd?.(output);
+            await handler.handleLLMEnd?.(output, this.runId, this._parentRunId);
           } catch (err) {
             console.error(
               `Error in handler ${handler.constructor.name}, handleLLMEnd: ${err}`
@@ -180,16 +555,73 @@ class CallbackManager extends BaseCallbackManager {
       })
     );
   }
+}
+
+class CallbackManager
+  extends BaseCallbackManager
+  implements BaseCallbackManagerMethods
+{
+  handlers: BaseCallbackHandler[];
+
+  inheritableHandlers: BaseCallbackHandler[];
+
+  name = "callback_manager";
+
+  private readonly _parentRunId?: string;
+
+  constructor(parentRunId?: string) {
+    super();
+    this.handlers = [];
+    this.inheritableHandlers = [];
+    this._parentRunId = parentRunId;
+  }
+
+  async handleLLMStart(
+    llm: { name: string },
+    prompts: string[],
+    runId: string = uuidv4()
+  ): Promise<CallbackManagerForLLMRun> {
+    await Promise.all(
+      this.handlers.map(async (handler) => {
+        if (!handler.ignoreLLM) {
+          try {
+            await handler.handleLLMStart?.(
+              llm,
+              prompts,
+              runId,
+              this._parentRunId
+            );
+          } catch (err) {
+            console.error(
+              `Error in handler ${handler.constructor.name}, handleLLMStart: ${err}`
+            );
+          }
+        }
+      })
+    );
+    return new CallbackManagerForLLMRun(
+      runId,
+      this.handlers,
+      this.inheritableHandlers,
+      this._parentRunId
+    );
+  }
+
   async handleChainStart(
     chain: { name: string },
     inputs: ChainValues,
-    verbose: boolean
-  ) {
+    runId = uuidv4()
+  ): Promise<CallbackManagerForChainRun> {
     await Promise.all(
       this.handlers.map(async (handler) => {
-        if (!handler.ignoreChain && (verbose || handler.alwaysVerbose)) {
+        if (!handler.ignoreChain) {
           try {
-            await handler.handleChainStart?.(chain, inputs);
+            await handler.handleChainStart?.(
+              chain,
+              inputs,
+              runId,
+              this._parentRunId
+            );
           } catch (err) {
             console.error(
               `Error in handler ${handler.constructor.name}, handleChainStart: ${err}`
@@ -198,47 +630,29 @@ class CallbackManager extends BaseCallbackManager {
         }
       })
     );
-  }
-  async handleChainError(err: Error, verbose: boolean) {
-    await Promise.all(
-      this.handlers.map(async (handler) => {
-        if (!handler.ignoreChain && (verbose || handler.alwaysVerbose)) {
-          try {
-            await handler.handleChainError?.(err);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleChainError: ${err}`
-            );
-          }
-        }
-      })
+    return new CallbackManagerForChainRun(
+      runId,
+      this.handlers,
+      this.inheritableHandlers,
+      this._parentRunId
     );
   }
-  async handleChainEnd(output: LLMResult, verbose: boolean) {
-    await Promise.all(
-      this.handlers.map(async (handler) => {
-        if (!handler.ignoreChain && (verbose || handler.alwaysVerbose)) {
-          try {
-            await handler.handleChainEnd?.(output);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleChainEnd: ${err}`
-            );
-          }
-        }
-      })
-    );
-  }
+
   async handleToolStart(
     tool: { name: string },
     input: string,
-    verbose?: boolean
-  ) {
+    runId = uuidv4()
+  ): Promise<CallbackManagerForToolRun> {
     await Promise.all(
       this.handlers.map(async (handler) => {
-        if (!handler.ignoreAgent && (verbose || handler.alwaysVerbose)) {
+        if (!handler.ignoreAgent) {
           try {
-            await handler.handleToolStart?.(tool, input);
+            await handler.handleToolStart?.(
+              tool,
+              input,
+              runId,
+              this._parentRunId
+            );
           } catch (err) {
             console.error(
               `Error in handler ${handler.constructor.name}, handleToolStart: ${err}`
@@ -247,107 +661,112 @@ class CallbackManager extends BaseCallbackManager {
         }
       })
     );
-  }
-  async handleToolError(err: Error, verbose?: boolean) {
-    await Promise.all(
-      this.handlers.map(async (handler) => {
-        if (!handler.ignoreAgent && (verbose || handler.alwaysVerbose)) {
-          try {
-            await handler.handleToolError?.(err);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleToolError: ${err}`
-            );
-          }
-        }
-      })
+    return new CallbackManagerForToolRun(
+      runId,
+      this.handlers,
+      this.inheritableHandlers,
+      this._parentRunId
     );
   }
-  async handleToolEnd(output: string, verbose: boolean) {
-    await Promise.all(
-      this.handlers.map(async (handler) => {
-        if (!handler.ignoreAgent && (verbose || handler.alwaysVerbose)) {
-          try {
-            await handler.handleToolEnd?.(output);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleToolEnd: ${err}`
-            );
-          }
-        }
-      })
-    );
-  }
-  async handleText(text: string, verbose: boolean) {
-    await Promise.all(
-      this.handlers.map(async (handler) => {
-        if (verbose || handler.alwaysVerbose) {
-          try {
-            await handler.handleText?.(text);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleText: ${err}`
-            );
-          }
-        }
-      })
-    );
-  }
-  async handleAgentAction(action: AgentAction, verbose: boolean) {
-    await Promise.all(
-      this.handlers.map(async (handler) => {
-        if (!handler.ignoreAgent && (verbose || handler.alwaysVerbose)) {
-          try {
-            await handler.handleAgentAction?.(action);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleAgentAction: ${err}`
-            );
-          }
-        }
-      })
-    );
-  }
-  async handleAgentEnd(action: AgentFinish, verbose: boolean) {
-    await Promise.all(
-      this.handlers.map(async (handler) => {
-        if (!handler.ignoreAgent && (verbose || handler.alwaysVerbose)) {
-          try {
-            await handler.handleAgentEnd?.(action);
-          } catch (err) {
-            console.error(
-              `Error in handler ${handler.constructor.name}, handleAgentEnd: ${err}`
-            );
-          }
-        }
-      })
-    );
-  }
-  addHandler(handler: BaseCallbackHandler) {
+
+  addHandler(handler: BaseCallbackHandler, inherit = true): void {
     this.handlers.push(handler);
+    if (inherit) {
+      this.inheritableHandlers.push(handler);
+    }
   }
-  removeHandler(handler: BaseCallbackHandler) {
+
+  removeHandler(handler: BaseCallbackHandler): void {
     this.handlers = this.handlers.filter((_handler) => _handler !== handler);
+    this.inheritableHandlers = this.inheritableHandlers.filter(
+      (_handler) => _handler !== handler
+    );
   }
-  setHandlers(handlers: BaseCallbackHandler[]) {
-    this.handlers = handlers;
+
+  setHandlers(handlers: BaseCallbackHandler[], inherit = true): void {
+    this.handlers = [];
+    this.inheritableHandlers = [];
+    for (const handler of handlers) {
+      this.addHandler(handler, inherit);
+    }
   }
-  static fromHandlers(handlers: BaseCallbackHandler[]) {
+
+  copy(
+    additionalHandlers: BaseCallbackHandler[] = [],
+    inherit = true
+  ): CallbackManager {
+    const manager = new CallbackManager(this._parentRunId);
+    for (const handler of this.handlers) {
+      const inheritable = this.inheritableHandlers.includes(handler);
+      manager.addHandler(handler, inheritable);
+    }
+    for (const handler of additionalHandlers) {
+      if (
+        // Prevent multiple copies of console_callback_handler
+        manager.handlers
+          .filter((h) => h.name === "console_callback_handler")
+          .some((h) => h.name === handler.name)
+      ) {
+        continue;
+      }
+      manager.addHandler(handler, inherit);
+    }
+    return manager;
+  }
+
+  static fromHandlers(handlers: CallbackHandlerMethods) {
     class Handler extends BaseCallbackHandler {
+      name = uuidv4();
+
       constructor() {
         super();
-        Object.defineProperty(this, "alwaysVerbose", {
-          enumerable: true,
-          configurable: true,
-          writable: true,
-          value: true,
-        });
         Object.assign(this, handlers);
       }
     }
+
     const manager = new this();
     manager.addHandler(new Handler());
     return manager;
+  }
+
+  static async configure(
+    inheritableHandlers?: Callbacks,
+    localHandlers?: Callbacks,
+    options?: CallbackManagerOptions
+  ): Promise<CallbackManager | undefined> {
+    let callbackManager: CallbackManager | undefined;
+    if (inheritableHandlers || localHandlers) {
+      if (Array.isArray(inheritableHandlers) || !inheritableHandlers) {
+        callbackManager = new CallbackManager();
+        callbackManager.setHandlers(
+          inheritableHandlers?.map(ensureHandler) ?? [],
+          true
+        );
+      } else {
+        callbackManager = inheritableHandlers;
+      }
+      callbackManager = callbackManager.copy(
+        Array.isArray(localHandlers)
+          ? localHandlers.map(ensureHandler)
+          : localHandlers?.handlers,
+        false
+      );
+    }
+    if (options?.verbose) {
+      if (!callbackManager) {
+        callbackManager = new CallbackManager();
+      }
+      if (
+        options?.verbose &&
+        !callbackManager.handlers.some(
+          (handler) => handler.name === ConsoleCallbackHandler.prototype.name
+        )
+      ) {
+        const consoleHandler = new ConsoleCallbackHandler();
+        callbackManager.addHandler(consoleHandler, true);
+      }
+    }
+    return callbackManager;
   }
 }
 
@@ -438,6 +857,855 @@ const SUFFIX = `Begin!
 Question: {input}
 Thought:{agent_scratchpad}`;
 
+type BaseMemory = {
+  loadMemoryVariables: (memory: unknown) => Record<string, unknown>;
+  saveContext: (context: unknown, output: Record<string, any>) => unknown;
+};
+
+abstract class BaseChain {
+  memory?: BaseMemory;
+  verbose: boolean;
+  callbackManager: CallbackManager;
+  abstract inputKeys: string[];
+  constructor(
+    memory?: BaseMemory,
+    verbose?: boolean,
+    callbackManager?: CallbackManager
+  ) {
+    this.memory = memory;
+    this.verbose = verbose ?? !!callbackManager;
+    this.callbackManager = callbackManager ?? getCallbackManager();
+  }
+  async run(input: string) {
+    const isKeylessInput = this.inputKeys.length === 1;
+    if (!isKeylessInput) {
+      throw new Error(
+        `Chain ${this._chainType()} expects multiple inputs, cannot use 'run' `
+      );
+    }
+    const values = { [this.inputKeys[0]]: input };
+    const returnValues = await this.call(values);
+    if (returnValues.llmOutput) {
+      return returnValues.llmOutput;
+    }
+    throw new Error(
+      "return values have multiple keys, `run` only supported when one key currently"
+    );
+  }
+  abstract _chainType(): string;
+  abstract _call(values: Record<string, unknown>): Promise<ChainValues>;
+  async call(values: Record<string, unknown>) {
+    const fullValues = { ...values };
+    if (!(this.memory == null)) {
+      const newValues = await this.memory.loadMemoryVariables(values);
+      for (const [key, value] of Object.entries(newValues)) {
+        fullValues[key] = value;
+      }
+    }
+    await this.callbackManager.handleChainStart(
+      { name: this._chainType() },
+      fullValues,
+      this.verbose
+    );
+    let outputValues: ChainValues;
+    try {
+      outputValues = await this._call(fullValues);
+    } catch (e) {
+      await this.callbackManager.handleChainError(e as Error, this.verbose);
+      throw e;
+    }
+    await this.callbackManager.handleChainEnd(outputValues, this.verbose);
+    if (!(this.memory == null)) {
+      await this.memory.saveContext(values, outputValues);
+    }
+    return outputValues;
+  }
+  async apply(inputs: Record<string, unknown>[]) {
+    return Promise.all(inputs.map(async (i) => this.call(i)));
+  }
+}
+
+interface ChainInputs extends BaseLangChainParams {
+  memory?: BaseMemory;
+
+  /**
+   * @deprecated Use `callbacks` instead
+   */
+  callbackManager?: CallbackManager;
+}
+
+interface LLMChainInput extends ChainInputs {
+  /** Prompt object to use */
+  prompt: BasePromptTemplate;
+  /** LLM Wrapper to use */
+  llm: BaseLanguageModel;
+  /** OutputParser to use */
+  outputParser?: BaseOutputParser;
+  /** Key to use for output, defaults to `text` */
+  outputKey?: string;
+}
+
+class CallbackManagerForChainRun
+  extends BaseRunManager
+  implements BaseCallbackManagerMethods
+{
+  getChild(): CallbackManager {
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    const manager = new CallbackManager(this.runId);
+    manager.setHandlers(this.inheritableHandlers);
+    return manager;
+  }
+
+  async handleChainError(err: Error | unknown): Promise<void> {
+    await Promise.all(
+      this.handlers.map(async (handler) => {
+        if (!handler.ignoreChain) {
+          try {
+            await handler.handleChainError?.(
+              err as Error,
+              this.runId,
+              this._parentRunId
+            );
+          } catch (err) {
+            console.error(
+              `Error in handler ${handler.constructor.name}, handleChainError: ${err}`
+            );
+          }
+        }
+      })
+    );
+  }
+
+  async handleChainEnd(output: ChainValues): Promise<void> {
+    await Promise.all(
+      this.handlers.map(async (handler) => {
+        if (!handler.ignoreChain) {
+          try {
+            await handler.handleChainEnd?.(
+              output,
+              this.runId,
+              this._parentRunId
+            );
+          } catch (err) {
+            console.error(
+              `Error in handler ${handler.constructor.name}, handleChainEnd: ${err}`
+            );
+          }
+        }
+      })
+    );
+  }
+
+  async handleAgentAction(action: AgentAction): Promise<void> {
+    await Promise.all(
+      this.handlers.map(async (handler) => {
+        if (!handler.ignoreAgent) {
+          try {
+            await handler.handleAgentAction?.(
+              action,
+              this.runId,
+              this._parentRunId
+            );
+          } catch (err) {
+            console.error(
+              `Error in handler ${handler.constructor.name}, handleAgentAction: ${err}`
+            );
+          }
+        }
+      })
+    );
+  }
+
+  async handleAgentEnd(action: AgentFinish): Promise<void> {
+    await Promise.all(
+      this.handlers.map(async (handler) => {
+        if (!handler.ignoreAgent) {
+          try {
+            await handler.handleAgentEnd?.(
+              action,
+              this.runId,
+              this._parentRunId
+            );
+          } catch (err) {
+            console.error(
+              `Error in handler ${handler.constructor.name}, handleAgentEnd: ${err}`
+            );
+          }
+        }
+      })
+    );
+  }
+}
+
+class LLMChain extends BaseChain implements LLMChainInput {
+  prompt: BasePromptTemplate;
+
+  llm: BaseLanguageModel;
+
+  outputKey = "text";
+
+  outputParser?: BaseOutputParser;
+
+  get inputKeys() {
+    return this.prompt.inputVariables;
+  }
+
+  get outputKeys() {
+    return [this.outputKey];
+  }
+
+  constructor(fields: LLMChainInput) {
+    // @ts-ignore
+    super(fields);
+    this.prompt = fields.prompt;
+    this.llm = fields.llm;
+    this.outputKey = fields.outputKey ?? this.outputKey;
+    this.outputParser = fields.outputParser ?? this.outputParser;
+    if (this.prompt.outputParser) {
+      if (this.outputParser) {
+        throw new Error("Cannot set both outputParser and prompt.outputParser");
+      }
+      this.outputParser = this.prompt.outputParser;
+    }
+  }
+
+  /** @ignore */
+  async _getFinalOutput(
+    generations: Generation[],
+    promptValue: BasePromptValue,
+    runManager?: CallbackManagerForChainRun
+  ): Promise<unknown> {
+    const completion = generations[0].text;
+    let finalCompletion: unknown;
+    if (this.outputParser) {
+      finalCompletion = await this.outputParser.parseWithPrompt(
+        completion,
+        promptValue,
+        runManager?.getChild()
+      );
+    } else {
+      finalCompletion = completion;
+    }
+    return finalCompletion;
+  }
+
+  /** @ignore */
+  async _call(
+    values: ChainValues,
+    runManager?: CallbackManagerForChainRun
+  ): Promise<ChainValues> {
+    let stop;
+    if ("stop" in values && Array.isArray(values.stop)) {
+      stop = values.stop;
+    }
+    const promptValue = await this.prompt.formatPromptValue(values);
+    const { generations } = await this.llm.generatePrompt(
+      [promptValue],
+      stop,
+      runManager?.getChild()
+    );
+    return {
+      [this.outputKey]: await this._getFinalOutput(
+        generations[0],
+        promptValue,
+        runManager
+      ),
+    };
+  }
+
+  /**
+   * Format prompt with values and pass to LLM
+   *
+   * @param values - keys to pass to prompt template
+   * @param callbackManager - CallbackManager to use
+   * @returns Completion from LLM.
+   *
+   * @example
+   * ```ts
+   * llm.predict({ adjective: "funny" })
+   * ```
+   */
+  async predict(
+    values: ChainValues,
+    callbackManager?: CallbackManager
+  ): Promise<string> {
+    const output = await this.call(values, callbackManager);
+    return output[this.outputKey];
+  }
+
+  _chainType() {
+    return "llm_chain" as const;
+  }
+
+  serialize(): SerializedLLMChain {
+    return {
+      _type: this._chainType(),
+      llm: this.llm.serialize(),
+      prompt: this.prompt.serialize(),
+    };
+  }
+}
+
+type StoppingMethod = "force" | "early" | "generate";
+
+abstract class BaseAgent {
+  abstract get inputKeys(): string[];
+
+  get returnValues(): string[] {
+    return ["output"];
+  }
+
+  get allowedTools(): string[] | undefined {
+    return undefined;
+  }
+
+  _agentType(): string {
+    throw new Error("Not implemented");
+  }
+
+  abstract _agentActionType(): string;
+
+  returnStoppedResponse(
+    earlyStoppingMethod: StoppingMethod,
+    _steps: AgentStep[],
+    _inputs: ChainValues,
+    _callbackManager?: CallbackManager
+  ): Promise<AgentFinish> {
+    if (earlyStoppingMethod === "force") {
+      return Promise.resolve({
+        returnValues: { output: "Agent stopped due to max iterations." },
+        log: "",
+      });
+    }
+
+    throw new Error(`Invalid stopping method: ${earlyStoppingMethod}`);
+  }
+
+  async prepareForOutput(
+    _returnValues: AgentFinish["returnValues"],
+    _steps: AgentStep[]
+  ): Promise<AgentFinish["returnValues"]> {
+    return {};
+  }
+}
+
+export abstract class BaseSingleActionAgent extends BaseAgent {
+  _agentActionType(): string {
+    return "single" as const;
+  }
+
+  abstract plan(
+    steps: AgentStep[],
+    inputs: ChainValues,
+    callbackManager?: CallbackManager
+  ): Promise<AgentAction | AgentFinish>;
+}
+
+export abstract class BaseMultiActionAgent extends BaseAgent {
+  _agentActionType(): string {
+    return "multi" as const;
+  }
+
+  abstract plan(
+    steps: AgentStep[],
+    inputs: ChainValues,
+    callbackManager?: CallbackManager
+  ): Promise<AgentAction[] | AgentFinish>;
+}
+
+export interface LLMSingleActionAgentInput {
+  llmChain: LLMChain;
+  outputParser: AgentActionOutputParser;
+  stop?: string[];
+}
+
+export class LLMSingleActionAgent extends BaseSingleActionAgent {
+  llmChain: LLMChain;
+
+  outputParser: AgentActionOutputParser;
+
+  stop?: string[];
+
+  constructor(input: LLMSingleActionAgentInput) {
+    super();
+    this.stop = input.stop;
+    this.llmChain = input.llmChain;
+    this.outputParser = input.outputParser;
+  }
+
+  get inputKeys(): string[] {
+    return this.llmChain.inputKeys;
+  }
+
+  /**
+   * Decide what to do given some input.
+   *
+   * @param steps - Steps the LLM has taken so far, along with observations from each.
+   * @param inputs - User inputs.
+   * @param callbackManager - Callback manager.
+   *
+   * @returns Action specifying what tool to use.
+   */
+  async plan(
+    steps: AgentStep[],
+    inputs: ChainValues,
+    callbackManager?: CallbackManager
+  ): Promise<AgentAction | AgentFinish> {
+    const output = await this.llmChain.call(
+      {
+        intermediate_steps: steps,
+        stop: this.stop,
+        ...inputs,
+      }
+      //callbackManager
+    );
+    return this.outputParser.parse(
+      output[this.llmChain.outputKey],
+      callbackManager
+    );
+  }
+}
+
+export interface AgentArgs {
+  outputParser?: AgentActionOutputParser;
+
+  callbacks?: CallbackManager[] | CallbackManager;
+}
+
+class ParseError extends Error {
+  output: string;
+
+  constructor(msg: string, output: string) {
+    super(msg);
+    this.output = output;
+  }
+}
+
+export abstract class Agent extends BaseSingleActionAgent {
+  llmChain: LLMChain;
+
+  outputParser: AgentActionOutputParser;
+
+  private _allowedTools?: string[] = undefined;
+
+  get allowedTools(): string[] | undefined {
+    return this._allowedTools;
+  }
+
+  get inputKeys(): string[] {
+    return this.llmChain.inputKeys.filter((k) => k !== "agent_scratchpad");
+  }
+
+  constructor(input: {
+    llmChain: LLMChain;
+    allowedTools?: string[];
+    outputParser: AgentActionOutputParser;
+  }) {
+    super();
+    this.llmChain = input.llmChain;
+    this._allowedTools = input.allowedTools;
+    this.outputParser = input.outputParser;
+  }
+
+  /**
+   * Prefix to append the observation with.
+   */
+  abstract observationPrefix(): string;
+
+  /**
+   * Prefix to append the LLM call with.
+   */
+  abstract llmPrefix(): string;
+
+  abstract _agentType(): string;
+
+  static createPrompt(
+    _tools: Tool[],
+    _fields?: Record<string, any>
+  ): BasePromptTemplate {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Validate that appropriate tools are passed in
+   */
+  static validateTools(_tools: Tool[]): void {}
+
+  _stop(): string[] {
+    return [`\n${this.observationPrefix()}`];
+  }
+
+  /**
+   * Name of tool to use to terminate the chain.
+   */
+  finishToolName(): string {
+    return "Final Answer";
+  }
+
+  /**
+   * Construct a scratchpad to let the agent continue its thought process
+   */
+  async constructScratchPad(
+    steps: AgentStep[]
+  ): Promise<string | BaseChatMessage[]> {
+    return steps.reduce(
+      (thoughts, { action, observation }) =>
+        thoughts +
+        [
+          action.log,
+          `${this.observationPrefix()}${observation}`,
+          this.llmPrefix(),
+        ].join("\n"),
+      ""
+    );
+  }
+
+  private async _plan(
+    steps: AgentStep[],
+    inputs: ChainValues,
+    suffix?: string,
+    callbackManager?: CallbackManager
+  ): Promise<AgentAction | AgentFinish> {
+    const thoughts = await this.constructScratchPad(steps);
+    const newInputs: ChainValues = {
+      ...inputs,
+      agent_scratchpad: suffix ? `${thoughts}${suffix}` : thoughts,
+    };
+
+    if (this._stop().length !== 0) {
+      newInputs.stop = this._stop();
+    }
+
+    const output = await this.llmChain.predict(newInputs);
+    return this.outputParser.parse(output, callbackManager);
+  }
+
+  /**
+   * Decide what to do given some input.
+   *
+   * @param steps - Steps the LLM has taken so far, along with observations from each.
+   * @param inputs - User inputs.
+   * @param callbackManager - Callback manager to use for this call.
+   *
+   * @returns Action specifying what tool to use.
+   */
+  plan(
+    steps: AgentStep[],
+    inputs: ChainValues,
+    callbackManager?: CallbackManager
+  ): Promise<AgentAction | AgentFinish> {
+    return this._plan(steps, inputs, undefined, callbackManager);
+  }
+
+  /**
+   * Return response when agent has been stopped due to max iterations
+   */
+  async returnStoppedResponse(
+    earlyStoppingMethod: StoppingMethod,
+    steps: AgentStep[],
+    inputs: ChainValues,
+    callbackManager?: CallbackManager
+  ): Promise<AgentFinish> {
+    if (earlyStoppingMethod === "force") {
+      return {
+        returnValues: { output: "Agent stopped due to max iterations." },
+        log: "",
+      };
+    }
+
+    if (earlyStoppingMethod === "generate") {
+      try {
+        const action = await this._plan(
+          steps,
+          inputs,
+          "\n\nI now need to return a final answer based on the previous steps:",
+          callbackManager
+        );
+        if ("returnValues" in action) {
+          return action;
+        }
+
+        return { returnValues: { output: action.log }, log: action.log };
+      } catch (err) {
+        // fine to use instanceof because we're in the same module
+        // eslint-disable-next-line no-instanceof/no-instanceof
+        if (!(err instanceof ParseError)) {
+          throw err;
+        }
+        return { returnValues: { output: err.output }, log: err.output };
+      }
+    }
+
+    throw new Error(`Invalid stopping method: ${earlyStoppingMethod}`);
+  }
+}
+
+const FORMAT_INSTRUCTIONS = `The way you use the tools is by specifying a json blob, denoted below by $JSON_BLOB
+Specifically, this $JSON_BLOB should have a "action" key (with the name of the tool to use) and a "action_input" key (with the input to the tool going here). 
+The $JSON_BLOB should only contain a SINGLE action, do NOT return a list of multiple actions. Here is an example of a valid $JSON_BLOB:
+
+\`\`\`
+{{
+  "action": "calculator",
+  "action_input": "1 + 2"
+}}
+\`\`\`
+
+ALWAYS use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: 
+\`\`\`
+$JSON_BLOB
+\`\`\`
+Observation: the result of the action
+... (this Thought/Action/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question`;
+
+export abstract class BaseOutputParser<T = unknown> {
+  /**
+   * Parse the output of an LLM call.
+   *
+   * @param text - LLM output to parse.
+   * @returns Parsed output.
+   */
+  abstract parse(
+    text: string,
+    callbacks?: CallbackManager[] | CallbackManager
+  ): Promise<T>;
+
+  async parseWithPrompt(
+    text: string,
+    _prompt: BasePromptValue,
+    callbacks?: CallbackManager[] | CallbackManager
+  ): Promise<T> {
+    return this.parse(text, callbacks);
+  }
+
+  abstract getFormatInstructions(): string;
+
+  _type(): string {
+    throw new Error("_type not implemented");
+  }
+}
+
+export abstract class AgentActionOutputParser extends BaseOutputParser<
+  AgentAction | AgentFinish
+> {}
+
+export const FINAL_ANSWER_ACTION = "Final Answer:";
+export class ZeroShotAgentOutputParser extends AgentActionOutputParser {
+  finishToolName: string;
+
+  constructor(fields?: Record<string, any>) {
+    super();
+    this.finishToolName = fields?.finishToolName || FINAL_ANSWER_ACTION;
+  }
+
+  async parse(text: string) {
+    if (text.includes(this.finishToolName)) {
+      const parts = text.split(this.finishToolName);
+      const output = parts[parts.length - 1].trim();
+      return {
+        returnValues: { output },
+        log: text,
+      };
+    }
+
+    const match = /Action: (.*)\nAction Input: (.*)/s.exec(text);
+    if (!match) {
+      throw new Error(`Could not parse LLM output: ${text}`);
+    }
+
+    return {
+      tool: match[1].trim(),
+      toolInput: match[2].trim().replace(/^"+|"+$/g, "") ?? "",
+      log: text,
+    };
+  }
+
+  getFormatInstructions(): string {
+    return FORMAT_INSTRUCTIONS;
+  }
+}
+
+export interface AgentInput {
+  llmChain: LLMChain;
+  outputParser: AgentActionOutputParser;
+  allowedTools?: string[];
+}
+
+type Optional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
+type ZeroShotAgentInput = Optional<AgentInput, "outputParser">;
+interface ZeroShotCreatePromptArgs {
+  suffix?: string;
+  prefix?: string;
+  inputVariables?: string[];
+}
+
+export class ZeroShotAgent extends Agent {
+  constructor(input: ZeroShotAgentInput) {
+    const outputParser = input?.outputParser ?? new ZeroShotAgentOutputParser();
+    super({ ...input, outputParser });
+  }
+
+  _agentType() {
+    return "zero-shot-react-description" as const;
+  }
+
+  observationPrefix() {
+    return "Observation: ";
+  }
+
+  llmPrefix() {
+    return "Thought:";
+  }
+
+  static validateTools(tools: Tool[]) {
+    const invalidTool = tools.find((tool) => !tool.description);
+    if (invalidTool) {
+      const msg =
+        `Got a tool ${invalidTool.name} without a description.` +
+        ` This agent requires descriptions for all tools.`;
+      throw new Error(msg);
+    }
+  }
+
+  static createPrompt(tools: Tool[], args?: ZeroShotCreatePromptArgs) {
+    const {
+      prefix = PREFIX,
+      suffix = SUFFIX,
+      inputVariables = ["input", "agent_scratchpad"],
+    } = args ?? {};
+    const toolStrings = tools
+      .map((tool) => `${tool.name}: ${tool.description}`)
+      .join("\n");
+
+    const toolNames = tools.map((tool) => tool.name);
+
+    const formatInstructions = renderTemplate(FORMAT_INSTRUCTIONS, "f-string", {
+      tool_names: toolNames,
+    });
+
+    const template = [prefix, toolStrings, formatInstructions, suffix].join(
+      "\n\n"
+    );
+
+    return new PromptTemplate({
+      template,
+      inputVariables,
+    });
+  }
+}
+
+class AgentExecutor extends BaseChain {
+  agent: Agent;
+  tools: Tool[];
+  returnIntermediateSteps: boolean;
+  maxIterations: number;
+  earlyStoppingMethod: StoppingMethod = "force";
+  get inputKeys() {
+    return this.agent.inputKeys;
+  }
+  constructor(input: {
+    memory: BaseMemory;
+    verbose: boolean;
+    callbackManager: CallbackManager;
+    agent: Agent;
+    tools: Tool[];
+    maxIterations?: number;
+    returnIntermediateSteps: boolean;
+    earlyStoppingMethod: StoppingMethod;
+  }) {
+    super(input.memory, input.verbose, input.callbackManager);
+
+    this.returnIntermediateSteps = false;
+    this.maxIterations = 15;
+    this.agent = input.agent;
+    this.tools = input.tools;
+    if (this.agent._agentActionType() === "multi") {
+      for (const tool of this.tools) {
+        if (tool.returnDirect) {
+          throw new Error(
+            `Tool with return direct ${tool.name} not supported for multi-action agent.`
+          );
+        }
+      }
+    }
+    this.returnIntermediateSteps =
+      input.returnIntermediateSteps ?? this.returnIntermediateSteps;
+    this.maxIterations = input.maxIterations ?? this.maxIterations;
+    this.earlyStoppingMethod =
+      input.earlyStoppingMethod ?? this.earlyStoppingMethod;
+  }
+  shouldContinue(iterations: number) {
+    return this.maxIterations === undefined || iterations < this.maxIterations;
+  }
+  async _call(inputs: ChainValues): Promise<ChainValues> {
+    const toolsByName = Object.fromEntries(
+      this.tools.map((t) => [t.name.toLowerCase(), t])
+    );
+    const steps: AgentStep[] = [];
+    let iterations = 0;
+    const getOutput = async (finishStep: AgentFinish) => {
+      const { returnValues } = finishStep;
+      const additional = await this.agent.prepareForOutput(returnValues, steps);
+      if (this.returnIntermediateSteps) {
+        return { ...returnValues, intermediateSteps: steps, ...additional };
+      }
+      await this.callbackManager.handleAgentEnd(finishStep, this.verbose);
+      return { ...returnValues, ...additional };
+    };
+    while (this.shouldContinue(iterations)) {
+      const output = await this.agent.plan(steps, inputs);
+      // Check if the agent has finished
+      if ("returnValues" in output) {
+        return getOutput(output as AgentFinish);
+      }
+      let actions;
+      if (Array.isArray(output)) {
+        actions = output;
+      } else {
+        actions = [output];
+      }
+      const newSteps = await Promise.all(
+        actions.map(async (action) => {
+          await this.callbackManager.handleAgentAction(action, this.verbose);
+          const tool = toolsByName[action.tool?.toLowerCase()];
+          const observation = tool
+            ? await tool.call(action.toolInput, this.verbose)
+            : `${action.tool} is not a valid tool, try another one.`;
+          return { action, observation };
+        })
+      );
+      steps.push(...newSteps);
+      const lastStep = steps[steps.length - 1];
+      const lastTool = toolsByName[lastStep.action.tool?.toLowerCase()];
+      if (lastTool?.returnDirect) {
+        return getOutput({
+          returnValues: { [this.agent.returnValues[0]]: lastStep.observation },
+          log: "",
+        });
+      }
+      iterations += 1;
+    }
+    const finish = await this.agent.returnStoppedResponse(
+      this.earlyStoppingMethod,
+      steps,
+      inputs
+    );
+    return getOutput(finish);
+  }
+  _chainType() {
+    return "agent_executor";
+  }
+  serialize() {
+    throw new Error("Cannot serialize an AgentExecutor");
+  }
+}
+
 const initializeAgentExecutor = async (
   tools: Tool[],
   llm: BaseLanguageModel,
@@ -462,7 +1730,7 @@ const initializeAgentExecutor = async (
   });
   const chain = new LLMChain({ prompt, llm });
 
-  return AgentExecutor.fromAgentAndTools({
+  return new AgentExecutor({
     agent: new ZeroShotAgent({
       llmChain: chain,
       allowedTools: tools.map((t) => t.name),
@@ -470,9 +1738,594 @@ const initializeAgentExecutor = async (
     tools,
     returnIntermediateSteps: true,
     verbose,
+    // @ts-ignore
     callbackManager,
   });
 };
+
+abstract class BaseLLM extends BaseLanguageModel {
+  declare CallOptions: BaseLanguageModelCallOptions;
+
+  cache?: BaseCache;
+
+  constructor({ cache, concurrency, ...rest }: BaseLLMParams) {
+    super(concurrency ? { maxConcurrency: concurrency, ...rest } : rest);
+    if (typeof cache === "object") {
+      this.cache = cache;
+    } else if (cache) {
+      this.cache = InMemoryCache.global();
+    } else {
+      this.cache = undefined;
+    }
+  }
+
+  async generatePrompt(
+    promptValues: BasePromptValue[],
+    stop?: string[] | this["CallOptions"],
+    callbacks?: Callbacks
+  ): Promise<LLMResult> {
+    const prompts: string[] = promptValues.map((promptValue) =>
+      promptValue.toString()
+    );
+    return this.generate(prompts, stop, callbacks);
+  }
+
+  /**
+   * Run the LLM on the given prompts and input.
+   */
+  abstract _generate(
+    prompts: string[],
+    stop?: string[] | this["CallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): Promise<LLMResult>;
+
+  /** @ignore */
+  async _generateUncached(
+    prompts: string[],
+    stop?: string[] | this["CallOptions"],
+    callbacks?: Callbacks
+  ): Promise<LLMResult> {
+    const callbackManager_ = await CallbackManager.configure(
+      callbacks,
+      this.callbacks,
+      { verbose: this.verbose }
+    );
+    const runManager = await callbackManager_?.handleLLMStart(
+      { name: this._llmType() },
+      prompts
+    );
+    let output;
+    try {
+      output = await this._generate(prompts, stop, runManager);
+    } catch (err) {
+      await runManager?.handleLLMError(err);
+      throw err;
+    }
+
+    await runManager?.handleLLMEnd(output);
+    // This defines RUN_KEY as a non-enumerable property on the output object
+    // so that it is not serialized when the output is stringified, and so that
+    // it isnt included when listing the keys of the output object.
+    Object.defineProperty(output, RUN_KEY, {
+      value: runManager ? { runId: runManager?.runId } : undefined,
+      configurable: true,
+    });
+    return output;
+  }
+
+  /**
+   * Run the LLM on the given propmts an input, handling caching.
+   */
+  async generate(
+    prompts: string[],
+    stop?: string[] | this["CallOptions"],
+    callbacks?: Callbacks
+  ): Promise<LLMResult> {
+    if (!Array.isArray(prompts)) {
+      throw new Error("Argument 'prompts' is expected to be a string[]");
+    }
+
+    if (!this.cache) {
+      return this._generateUncached(prompts, stop, callbacks);
+    }
+
+    const { cache } = this;
+    const params = this.serialize();
+    params.stop = stop;
+
+    const llmStringKey = `${Object.entries(params).sort()}`;
+    const missingPromptIndices: number[] = [];
+    const generations = await Promise.all(
+      prompts.map(async (prompt, index) => {
+        const result = await cache.lookup(prompt, llmStringKey);
+        if (!result) {
+          missingPromptIndices.push(index);
+        }
+        return result;
+      })
+    );
+
+    let llmOutput = {};
+    if (missingPromptIndices.length > 0) {
+      const results = await this._generateUncached(
+        missingPromptIndices.map((i) => prompts[i]),
+        stop,
+        callbacks
+      );
+      await Promise.all(
+        results.generations.map(async (generation, index) => {
+          const promptIndex = missingPromptIndices[index];
+          generations[promptIndex] = generation;
+          return cache.update(prompts[promptIndex], llmStringKey, generation);
+        })
+      );
+      llmOutput = results.llmOutput ?? {};
+    }
+
+    return { generations, llmOutput } as LLMResult;
+  }
+
+  /**
+   * Convenience wrapper for {@link generate} that takes in a single string prompt and returns a single string output.
+   */
+  async call(
+    prompt: string,
+    stop?: string[] | this["CallOptions"],
+    callbacks?: Callbacks
+  ) {
+    const { generations } = await this.generate([prompt], stop, callbacks);
+    return generations[0][0].text;
+  }
+
+  /**
+   * Get the identifying parameters of the LLM.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _identifyingParams(): Record<string, any> {
+    return {};
+  }
+
+  /**
+   * Return the string type key uniquely identifying this class of LLM.
+   */
+  abstract _llmType(): string;
+
+  /**
+   * Return a json-like object representing this LLM.
+   */
+  serialize(): SerializedLLM {
+    return {
+      ...this._identifyingParams(),
+      _type: this._llmType(),
+      _model: this._modelType(),
+    };
+  }
+
+  _modelType(): string {
+    return "base_llm" as const;
+  }
+}
+
+interface OpenAIInput {
+  /** Sampling temperature to use */
+  temperature: number;
+
+  /**
+   * Maximum number of tokens to generate in the completion. -1 returns as many
+   * tokens as possible given the prompt and the model's maximum context size.
+   */
+  maxTokens: number;
+
+  /** Total probability mass of tokens to consider at each step */
+  topP: number;
+
+  /** Penalizes repeated tokens according to frequency */
+  frequencyPenalty: number;
+
+  /** Penalizes repeated tokens */
+  presencePenalty: number;
+
+  /** Number of completions to generate for each prompt */
+  n: number;
+
+  /** Generates `bestOf` completions server side and returns the "best" */
+  bestOf: number;
+
+  /** Dictionary used to adjust the probability of specific tokens being generated */
+  logitBias?: Record<string, number>;
+
+  /** Whether to stream the results or not. Enabling disables tokenUsage reporting */
+  streaming: boolean;
+
+  /** Model name to use */
+  modelName: string;
+
+  /** Holds any additional parameters that are valid to pass to {@link
+   * https://platform.openai.com/docs/api-reference/completions/create |
+   * `openai.createCompletion`} that are not explicitly specified on this class.
+   */
+  modelKwargs?: Kwargs;
+
+  /** Batch size to use when passing multiple documents to generate */
+  batchSize: number;
+
+  /** List of stop words to use when generating */
+  stop?: string[];
+
+  /**
+   * Timeout to use when making requests to OpenAI.
+   */
+  timeout?: number;
+}
+
+class OpenAI extends BaseLLM implements OpenAIInput {
+  declare CallOptions: OpenAICallOptions;
+
+  temperature = 0.7;
+
+  maxTokens = 256;
+
+  topP = 1;
+
+  frequencyPenalty = 0;
+
+  presencePenalty = 0;
+
+  n = 1;
+
+  bestOf = 1;
+
+  logitBias?: Record<string, number>;
+
+  modelName = "text-davinci-003";
+
+  modelKwargs?: Kwargs;
+
+  batchSize = 20;
+
+  timeout?: number;
+
+  stop?: string[];
+
+  streaming = false;
+
+  private client: OpenAIApi;
+
+  private clientConfig: ConfigurationParameters;
+
+  constructor(
+    fields?: Partial<OpenAIInput> &
+      BaseLLMParams & {
+        openAIApiKey?: string;
+      },
+    configuration?: ConfigurationParameters
+  ) {
+    if (
+      fields?.modelName?.startsWith("gpt-3.5-turbo") ||
+      fields?.modelName?.startsWith("gpt-4")
+    ) {
+      // eslint-disable-next-line no-constructor-return, @typescript-eslint/no-explicit-any
+      return new OpenAIChat(fields, configuration) as any as OpenAI;
+    }
+    super(fields ?? {});
+
+    const apiKey =
+      fields?.openAIApiKey ??
+      (typeof process !== "undefined"
+        ? // eslint-disable-next-line no-process-env
+          process.env?.OPENAI_API_KEY
+        : undefined);
+    if (!apiKey) {
+      throw new Error("OpenAI API key not found");
+    }
+
+    this.modelName = fields?.modelName ?? this.modelName;
+    this.modelKwargs = fields?.modelKwargs ?? {};
+    this.batchSize = fields?.batchSize ?? this.batchSize;
+    this.timeout = fields?.timeout;
+
+    this.temperature = fields?.temperature ?? this.temperature;
+    this.maxTokens = fields?.maxTokens ?? this.maxTokens;
+    this.topP = fields?.topP ?? this.topP;
+    this.frequencyPenalty = fields?.frequencyPenalty ?? this.frequencyPenalty;
+    this.presencePenalty = fields?.presencePenalty ?? this.presencePenalty;
+    this.n = fields?.n ?? this.n;
+    this.bestOf = fields?.bestOf ?? this.bestOf;
+    this.logitBias = fields?.logitBias;
+    this.stop = fields?.stop;
+
+    this.streaming = fields?.streaming ?? false;
+
+    if (this.streaming && this.n > 1) {
+      throw new Error("Cannot stream results when n > 1");
+    }
+
+    if (this.streaming && this.bestOf > 1) {
+      throw new Error("Cannot stream results when bestOf > 1");
+    }
+
+    this.clientConfig = {
+      apiKey,
+      ...configuration,
+    };
+  }
+
+  /**
+   * Get the parameters used to invoke the model
+   */
+  invocationParams(): CreateCompletionRequest & Kwargs {
+    return {
+      model: this.modelName,
+      temperature: this.temperature,
+      max_tokens: this.maxTokens,
+      top_p: this.topP,
+      frequency_penalty: this.frequencyPenalty,
+      presence_penalty: this.presencePenalty,
+      n: this.n,
+      best_of: this.bestOf,
+      logit_bias: this.logitBias,
+      stop: this.stop,
+      stream: this.streaming,
+      ...this.modelKwargs,
+    };
+  }
+
+  _identifyingParams() {
+    return {
+      model_name: this.modelName,
+      ...this.invocationParams(),
+      ...this.clientConfig,
+    };
+  }
+
+  /**
+   * Get the identifying parameters for the model
+   */
+  identifyingParams() {
+    return this._identifyingParams();
+  }
+
+  /**
+   * Call out to OpenAI's endpoint with k unique prompts
+   *
+   * @param prompts - The prompts to pass into the model.
+   * @param [stop] - Optional list of stop words to use when generating.
+   * @param [runManager] - Optional callback manager to use when generating.
+   *
+   * @returns The full LLM output.
+   *
+   * @example
+   * ```ts
+   * import { OpenAI } from "langchain/llms/openai";
+   * const openai = new OpenAI();
+   * const response = await openai.generate(["Tell me a joke."]);
+   * ```
+   */
+  async _generate(
+    prompts: string[],
+    stopOrOptions?: string[] | this["CallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): Promise<LLMResult> {
+    const stop = Array.isArray(stopOrOptions)
+      ? stopOrOptions
+      : stopOrOptions?.stop;
+    const options = Array.isArray(stopOrOptions)
+      ? {}
+      : stopOrOptions?.options ?? {};
+    const subPrompts = chunkArray(prompts, this.batchSize);
+    const choices: CreateCompletionResponseChoicesInner[] = [];
+    const tokenUsage: TokenUsage = {};
+
+    if (this.stop && stop) {
+      throw new Error("Stop found in input and default params");
+    }
+
+    const params = this.invocationParams();
+    params.stop = stop ?? params.stop;
+
+    if (params.max_tokens === -1) {
+      if (prompts.length !== 1) {
+        throw new Error(
+          "max_tokens set to -1 not supported for multiple inputs"
+        );
+      }
+      params.max_tokens = await calculateMaxTokens({
+        prompt: prompts[0],
+        // Cast here to allow for other models that may not fit the union
+        modelName: this.modelName as TiktokenModel,
+      });
+    }
+
+    for (let i = 0; i < subPrompts.length; i += 1) {
+      const data = params.stream
+        ? await new Promise<CreateCompletionResponse>((resolve, reject) => {
+            const choice: CreateCompletionResponseChoicesInner = {};
+            let response: Omit<CreateCompletionResponse, "choices">;
+            let rejected = false;
+            this.completionWithRetry(
+              {
+                ...params,
+                prompt: subPrompts[i],
+              },
+              {
+                ...options,
+                responseType: "stream",
+                onmessage: (event) => {
+                  if (event.data?.trim?.() === "[DONE]") {
+                    resolve({
+                      ...response,
+                      choices: [choice],
+                    });
+                  } else {
+                    const message = JSON.parse(event.data) as Omit<
+                      CreateCompletionResponse,
+                      "usage"
+                    >;
+
+                    // on the first message set the response properties
+                    if (!response) {
+                      response = {
+                        id: message.id,
+                        object: message.object,
+                        created: message.created,
+                        model: message.model,
+                      };
+                    }
+
+                    // on all messages, update choice
+                    const part = message.choices[0];
+                    if (part != null) {
+                      choice.text = (choice.text ?? "") + (part.text ?? "");
+                      choice.finish_reason = part.finish_reason;
+                      choice.logprobs = part.logprobs;
+                      // eslint-disable-next-line no-void
+                      void runManager?.handleLLMNewToken(part.text ?? "");
+                    }
+                  }
+                },
+              }
+            ).catch((error) => {
+              if (!rejected) {
+                rejected = true;
+                reject(error);
+              }
+            });
+          })
+        : await this.completionWithRetry(
+            {
+              ...params,
+              prompt: subPrompts[i],
+            },
+            options
+          );
+
+      choices.push(...data.choices);
+
+      const {
+        completion_tokens: completionTokens,
+        prompt_tokens: promptTokens,
+        total_tokens: totalTokens,
+      } = data.usage ?? {};
+
+      if (completionTokens) {
+        tokenUsage.completionTokens =
+          (tokenUsage.completionTokens ?? 0) + completionTokens;
+      }
+
+      if (promptTokens) {
+        tokenUsage.promptTokens = (tokenUsage.promptTokens ?? 0) + promptTokens;
+      }
+
+      if (totalTokens) {
+        tokenUsage.totalTokens = (tokenUsage.totalTokens ?? 0) + totalTokens;
+      }
+    }
+
+    const generations = chunkArray(choices, this.n).map((promptChoices) =>
+      promptChoices.map((choice) => ({
+        text: choice.text ?? "",
+        generationInfo: {
+          finishReason: choice.finish_reason,
+          logprobs: choice.logprobs,
+        },
+      }))
+    );
+    return {
+      generations,
+      llmOutput: { tokenUsage },
+    };
+  }
+
+  /** @ignore */
+  async completionWithRetry(
+    request: CreateCompletionRequest,
+    options?: StreamingAxiosConfiguration
+  ) {
+    if (!this.client) {
+      const clientConfig = new Configuration({
+        ...this.clientConfig,
+        baseOptions: {
+          timeout: this.timeout,
+          adapter: fetchAdapter,
+          ...this.clientConfig.baseOptions,
+        },
+      });
+      this.client = new OpenAIApi(clientConfig);
+    }
+    return this.caller
+      .call(this.client.createCompletion.bind(this.client), request, options)
+      .then((res) => res.data);
+  }
+
+  _llmType() {
+    return "openai";
+  }
+}
+
+/**
+ * PromptLayer wrapper to OpenAI
+ * @augments OpenAI
+ */
+export class PromptLayerOpenAI extends OpenAI {
+  promptLayerApiKey?: string;
+
+  plTags?: string[];
+
+  constructor(
+    fields?: ConstructorParameters<typeof OpenAI>[0] & {
+      promptLayerApiKey?: string;
+      plTags?: string[];
+    }
+  ) {
+    super(fields);
+
+    this.plTags = fields?.plTags ?? [];
+    this.promptLayerApiKey =
+      fields?.promptLayerApiKey ??
+      (typeof process !== "undefined"
+        ? // eslint-disable-next-line no-process-env
+          process.env?.PROMPTLAYER_API_KEY
+        : undefined);
+
+    if (!this.promptLayerApiKey) {
+      throw new Error("Missing PromptLayer API key");
+    }
+  }
+
+  async completionWithRetry(
+    request: CreateCompletionRequest,
+    options?: StreamingAxiosConfiguration
+  ) {
+    if (request.stream) {
+      return super.completionWithRetry(request, options);
+    }
+
+    const requestStartTime = Date.now();
+    const response = await super.completionWithRetry(request);
+    const requestEndTime = Date.now();
+
+    // https://github.com/MagnivOrg/promptlayer-js-helper
+    await this.caller.call(fetch, "https://api.promptlayer.com/track-request", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        function_name: "openai.Completion.create",
+        args: [],
+        kwargs: { engine: request.model, prompt: request.prompt },
+        tags: this.plTags ?? [],
+        request_response: response,
+        request_start_time: Math.floor(requestStartTime / 1000),
+        request_end_time: Math.floor(requestEndTime / 1000),
+        api_key: this.promptLayerApiKey,
+      }),
+    });
+
+    return response;
+  }
+}
 
 class GithubCodeSearchTool extends Tool {
   name = "Github Code Search";
@@ -798,6 +2651,318 @@ class FsRemoveText extends Tool {
     )}`;
     fs.writeFileSync(path, newContent);
     return `Successfully inserted text into ${path}.`;
+  }
+}
+
+abstract class BasePromptTemplate implements BasePromptTemplateInput {
+  inputVariables: string[];
+
+  outputParser?: BaseOutputParser;
+
+  partialVariables?: InputValues;
+
+  constructor(input: BasePromptTemplateInput) {
+    const { inputVariables } = input;
+    if (inputVariables.includes("stop")) {
+      throw new Error(
+        "Cannot have an input variable named 'stop', as it is used internally, please rename."
+      );
+    }
+    Object.assign(this, input);
+  }
+
+  abstract partial(values: PartialValues): Promise<BasePromptTemplate>;
+
+  async mergePartialAndUserVariables(
+    userVariables: InputValues
+  ): Promise<InputValues> {
+    const partialVariables = this.partialVariables ?? {};
+    const partialValues: InputValues = {};
+
+    for (const [key, value] of Object.entries(partialVariables)) {
+      if (typeof value === "string") {
+        partialValues[key] = value;
+      } else {
+        partialValues[key] = await value();
+      }
+    }
+
+    const allKwargs = { ...partialValues, ...userVariables };
+    return allKwargs;
+  }
+
+  /**
+   * Format the prompt given the input values.
+   *
+   * @param values - A dictionary of arguments to be passed to the prompt template.
+   * @returns A formatted prompt string.
+   *
+   * @example
+   * ```ts
+   * prompt.format({ foo: "bar" });
+   * ```
+   */
+  abstract format(values: InputValues): Promise<string>;
+
+  /**
+   * Format the prompt given the input values and return a formatted prompt value.
+   * @param values
+   * @returns A formatted PromptValue.
+   */
+  abstract formatPromptValue(values: InputValues): Promise<BasePromptValue>;
+
+  /**
+   * Return the string type key uniquely identifying this class of prompt template.
+   */
+  abstract _getPromptType(): string;
+
+  /**
+   * Return a json-like object representing this prompt template.
+   */
+  abstract serialize(): SerializedBasePromptTemplate;
+}
+
+abstract class BaseStringPromptTemplate extends BasePromptTemplate {
+  async formatPromptValue(values: InputValues): Promise<BasePromptValue> {
+    const formattedPrompt = await this.format(values);
+    return new StringPromptValue(formattedPrompt);
+  }
+}
+
+type PartialValues = Record<
+  string,
+  string | (() => Promise<string>) | (() => string)
+>;
+
+interface BasePromptTemplateInput {
+  /**
+   * A list of variable names the prompt template expects
+   */
+  inputVariables: string[];
+
+  /**
+   * How to parse the output of calling an LLM on this formatted prompt
+   */
+  outputParser?: BaseOutputParser;
+
+  /** Partial variables */
+  partialVariables?: PartialValues;
+}
+
+type TemplateFormat = "f-string" | "jinja-2";
+
+interface PromptTemplateInput extends BasePromptTemplateInput {
+  /**
+   * The prompt template
+   */
+  template: string;
+
+  /**
+   * The format of the prompt template. Options are 'f-string', 'jinja-2'
+   *
+   * @defaultValue 'f-string'
+   */
+  templateFormat?: TemplateFormat;
+
+  /**
+   * Whether or not to try validating the template on initialization
+   *
+   * @defaultValue `true`
+   */
+  validateTemplate?: boolean;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type InputValues = Record<string, any>;
+
+type ParsedFStringNode =
+  | { type: "literal"; text: string }
+  | { type: "variable"; name: string };
+
+type Interpolator = (template: string, values: InputValues) => string;
+const parseFString = (template: string): ParsedFStringNode[] => {
+  // Core logic replicated from internals of pythons built in Formatter class.
+  // https://github.com/python/cpython/blob/135ec7cefbaffd516b77362ad2b2ad1025af462e/Objects/stringlib/unicode_format.h#L700-L706
+  const chars = template.split("");
+  const nodes: ParsedFStringNode[] = [];
+
+  const nextBracket = (bracket: "}" | "{" | "{}", start: number) => {
+    for (let i = start; i < chars.length; i += 1) {
+      if (bracket.includes(chars[i])) {
+        return i;
+      }
+    }
+    return -1;
+  };
+
+  let i = 0;
+  while (i < chars.length) {
+    if (chars[i] === "{" && i + 1 < chars.length && chars[i + 1] === "{") {
+      nodes.push({ type: "literal", text: "{" });
+      i += 2;
+    } else if (
+      chars[i] === "}" &&
+      i + 1 < chars.length &&
+      chars[i + 1] === "}"
+    ) {
+      nodes.push({ type: "literal", text: "}" });
+      i += 2;
+    } else if (chars[i] === "{") {
+      const j = nextBracket("}", i);
+      if (j < 0) {
+        throw new Error("Unclosed '{' in template.");
+      }
+
+      nodes.push({
+        type: "variable",
+        name: chars.slice(i + 1, j).join(""),
+      });
+      i = j + 1;
+    } else if (chars[i] === "}") {
+      throw new Error("Single '}' in template.");
+    } else {
+      const next = nextBracket("{}", i);
+      const text = (next < 0 ? chars.slice(i) : chars.slice(i, next)).join("");
+      nodes.push({ type: "literal", text });
+      i = next < 0 ? chars.length : next;
+    }
+  }
+  return nodes;
+};
+
+const interpolateFString = (template: string, values: InputValues) =>
+  parseFString(template).reduce((res, node) => {
+    if (node.type === "variable") {
+      if (node.name in values) {
+        return res + values[node.name];
+      }
+      throw new Error(`Missing value for input ${node.name}`);
+    }
+
+    return res + node.text;
+  }, "");
+
+const DEFAULT_FORMATTER_MAPPING: Record<TemplateFormat, Interpolator> = {
+  "f-string": interpolateFString,
+  "jinja-2": (_: string, __: InputValues) => "",
+};
+
+const renderTemplate = (
+  template: string,
+  templateFormat: TemplateFormat,
+  inputValues: InputValues
+) => DEFAULT_FORMATTER_MAPPING[templateFormat](template, inputValues);
+
+const checkValidTemplate = (
+  template: string,
+  templateFormat: TemplateFormat,
+  inputVariables: string[]
+) => {
+  if (!(templateFormat in DEFAULT_FORMATTER_MAPPING)) {
+    const validFormats = Object.keys(DEFAULT_FORMATTER_MAPPING);
+    throw new Error(`Invalid template format. Got \`${templateFormat}\`;
+                         should be one of ${validFormats}`);
+  }
+  try {
+    const dummyInputs: InputValues = inputVariables.reduce((acc, v) => {
+      acc[v] = "foo";
+      return acc;
+    }, {} as Record<string, string>);
+    renderTemplate(template, templateFormat, dummyInputs);
+  } catch {
+    throw new Error("Invalid prompt schema.");
+  }
+};
+
+class PromptTemplate
+  extends BaseStringPromptTemplate
+  implements PromptTemplateInput
+{
+  template: string;
+
+  templateFormat: TemplateFormat = "f-string";
+
+  validateTemplate = true;
+
+  constructor(input: PromptTemplateInput) {
+    super(input);
+    Object.assign(this, input);
+
+    if (this.validateTemplate) {
+      let totalInputVariables = this.inputVariables;
+      if (this.partialVariables) {
+        totalInputVariables = totalInputVariables.concat(
+          Object.keys(this.partialVariables)
+        );
+      }
+      checkValidTemplate(
+        this.template,
+        this.templateFormat,
+        totalInputVariables
+      );
+    }
+  }
+
+  _getPromptType(): "prompt" {
+    return "prompt";
+  }
+
+  async format(values: InputValues): Promise<string> {
+    const allValues = await this.mergePartialAndUserVariables(values);
+    return renderTemplate(this.template, this.templateFormat, allValues);
+  }
+
+  /**
+   * Take examples in list format with prefix and suffix to create a prompt.
+   *
+   * Intendend to be used a a way to dynamically create a prompt from examples.
+   *
+   * @param examples - List of examples to use in the prompt.
+   * @param suffix - String to go after the list of examples. Should generally set up the user's input.
+   * @param inputVariables - A list of variable names the final prompt template will expect
+   * @param exampleSeparator - The separator to use in between examples
+   * @param prefix - String that should go before any examples. Generally includes examples.
+   *
+   * @returns The final prompt template generated.
+   */
+  static fromExamples(
+    examples: string[],
+    suffix: string,
+    inputVariables: string[],
+    exampleSeparator = "\n\n",
+    prefix = ""
+  ) {
+    const template = [prefix, ...examples, suffix].join(exampleSeparator);
+    return new PromptTemplate({
+      inputVariables,
+      template,
+    });
+  }
+
+  async partial(values: PartialValues): Promise<PromptTemplate> {
+    const promptDict: PromptTemplateInput = { ...this };
+    promptDict.inputVariables = this.inputVariables.filter(
+      (iv) => !(iv in values)
+    );
+    promptDict.partialVariables = {
+      ...(this.partialVariables ?? {}),
+      ...values,
+    };
+    return new PromptTemplate(promptDict);
+  }
+
+  serialize(): SerializedPromptTemplate {
+    if (this.outputParser !== undefined) {
+      throw new Error(
+        "Cannot serialize a prompt template with an output parser"
+      );
+    }
+    return {
+      _type: this._getPromptType(),
+      input_variables: this.inputVariables,
+      template: this.template,
+      template_format: this.templateFormat,
+    };
   }
 }
 
