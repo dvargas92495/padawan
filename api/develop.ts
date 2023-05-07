@@ -12,8 +12,15 @@ import {
   CreateCompletionRequest,
   CreateCompletionResponse,
   CreateCompletionResponseChoicesInner,
+  CreateChatCompletionRequest,
+  CreateChatCompletionResponse,
+  ChatCompletionRequestMessage,
+  ChatCompletionResponseMessageRoleEnum,
   OpenAIApi,
 } from "openai";
+import { v4 } from "uuid";
+import crypto from "crypto";
+import { AxiosRequestConfig } from "axios";
 
 // Try to remove
 import PQueueMod from "p-queue";
@@ -29,6 +36,289 @@ const importTiktoken = async () => {
     return { encoding_for_model: null };
   }
 };
+
+// Copied from axios/lib/helpers/isAbsoluteURL.js
+function isAbsoluteURL(url: string) {
+  // A URL is considered absolute if it begins with "<scheme>://" or "//" (protocol-relative URL).
+  // RFC 3986 defines scheme name as a sequence of characters beginning with a letter and followed
+  // by any combination of letters, digits, plus, period, or hyphen.
+  return /^([a-z][a-z\d+\-.]*:)?\/\//i.test(url);
+}
+
+// Copied from axios/lib/helpers/combineURLs.js
+function combineURLs(baseURL: string, relativeURL: string) {
+  return relativeURL
+    ? baseURL.replace(/\/+$/, "") + "/" + relativeURL.replace(/^\/+/, "")
+    : baseURL;
+}
+
+function buildFullPath(baseURL: string, requestedURL: string) {
+  if (baseURL && !isAbsoluteURL(requestedURL)) {
+    return combineURLs(baseURL, requestedURL);
+  }
+  return requestedURL;
+}
+
+function createRequest(config: unknown) {
+  //@ts-ignore
+  const headers = new Headers(config.headers || {});
+
+  // HTTP basic authentication
+  //@ts-ignore
+  if (config.auth) {
+    //@ts-ignore
+    const username = config.auth.username || "";
+    //@ts-ignore
+    const password = config.auth.password
+      ? //@ts-ignore
+        decodeURI(encodeURIComponent(config.auth.password))
+      : "";
+    headers.set("Authorization", `Basic ${btoa(`${username}:${password}`)}`);
+  }
+
+  //@ts-ignore
+  const method = config.method?.toUpperCase();
+  const options: Record<string, unknown> = {
+    headers,
+    method,
+  };
+  if (method !== "GET" && method !== "HEAD") {
+    //@ts-ignore
+    options.body = config.data;
+
+    // In these cases the browser will automatically set the correct Content-Type,
+    // but only if that header hasn't been set yet. So that's why we're deleting it.
+    //@ts-ignore
+    if (isFormData(options.body) && isStandardBrowserEnv()) {
+      headers.delete("Content-Type");
+    }
+  }
+  //@ts-ignore
+  if (config.mode) {
+    //@ts-ignore
+    options.mode = config.mode;
+  }
+  //@ts-ignore
+  if (config.cache) {
+    //@ts-ignore
+    options.cache = config.cache;
+  }
+  //@ts-ignore
+  if (config.integrity) {
+    //@ts-ignore
+    options.integrity = config.integrity;
+  }
+  //@ts-ignore
+  if (config.redirect) {
+    //@ts-ignore
+    options.redirect = config.redirect;
+  }
+  //@ts-ignore
+  if (config.referrer) {
+    //@ts-ignore
+    options.referrer = config.referrer;
+  }
+  //@ts-ignore
+  if (config.timeout && config.timeout > 0) {
+    //@ts-ignore
+    options.signal = AbortSignal.timeout(config.timeout);
+  }
+  //@ts-ignore
+  if (config.signal) {
+    // this overrides the timeout signal if both are set
+    //@ts-ignore
+    options.signal = config.signal;
+  }
+  // This config is similar to XHR’s withCredentials flag, but with three available values instead of two.
+  // So if withCredentials is not set, default value 'same-origin' will be used
+  //@ts-ignore
+  if (!isUndefined(config.withCredentials)) {
+    //@ts-ignore
+    options.credentials = config.withCredentials ? "include" : "omit";
+  }
+  // for streaming
+  //@ts-ignore
+  if (config.responseType === "stream") {
+    //@ts-ignore
+    options.headers.set("Accept", EventStreamContentType);
+  }
+
+  // @ts-ignore
+  const fullPath = buildFullPath(config.baseURL, config.url);
+  // @ts-ignore
+  const url = buildURL(fullPath, config.params, config.paramsSerializer);
+
+  // Expected browser to throw error if there is any wrong configuration value
+  return new Request(url, options);
+}
+
+function enhanceError(
+  error: Error,
+  config: unknown,
+  code: string,
+  request: Request,
+  response?: Response
+) {
+  // @ts-ignore
+  error.config = config;
+  if (code) {
+    // @ts-ignore
+    error.code = code;
+  }
+
+  // @ts-ignore
+  error.request = request;
+  // @ts-ignore
+  error.response = response;
+  // @ts-ignore
+  error.isAxiosError = true;
+
+  // @ts-ignore
+  error.toJSON = function toJSON() {
+    return {
+      // Standard
+      message: this.message,
+      name: this.name,
+      // Microsoft
+      // @ts-ignore
+      description: this.description,
+      // @ts-ignore
+      number: this.number,
+      // Mozilla
+      // @ts-ignore
+      fileName: this.fileName,
+      // @ts-ignore
+      lineNumber: this.lineNumber,
+      // @ts-ignore
+      columnNumber: this.columnNumber,
+      stack: this.stack,
+      // Axios
+      // @ts-ignore
+      config: this.config,
+      // @ts-ignore
+      code: this.code,
+      status:
+        // @ts-ignore
+        this.response && this.response.status ? this.response.status : null,
+    };
+  };
+  return error;
+}
+
+function createError(
+  message: string,
+  config: unknown,
+  code: string,
+  request: Request,
+  response?: Response
+) {
+  const error = new Error(message);
+  return enhanceError(error, config, code, request, response);
+}
+
+async function getResponse(request: Request, config: unknown) {
+  let stageOne;
+  try {
+    stageOne = await fetch(request);
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      return createError("Request aborted", config, "ECONNABORTED", request);
+    }
+    if (e instanceof Error && e.name === "TimeoutError") {
+      return createError("Request timeout", config, "ECONNABORTED", request);
+    }
+    return createError("Network Error", config, "ERR_NETWORK", request);
+  }
+
+  const headers: Record<string, string> = {};
+  stageOne.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+
+  const response = {
+    ok: stageOne.ok,
+    status: stageOne.status,
+    statusText: stageOne.statusText,
+    headers,
+    config,
+    request,
+  };
+
+  if (stageOne.status >= 200 && stageOne.status !== 204) {
+    // @ts-ignore
+    if (config.responseType === "stream") {
+      const contentType = stageOne.headers.get("content-type");
+      // @ts-ignore
+      if (!contentType?.startsWith(EventStreamContentType)) {
+        // If the content-type is not stream, response is most likely an error
+        if (stageOne.status >= 400) {
+          // If the error is a JSON, parse it. Otherwise, return as text
+          if (contentType?.startsWith("application/json")) {
+            // @ts-ignore
+            response.data = await stageOne.json();
+            return response;
+          } else {
+            // @ts-ignore
+            response.data = await stageOne.text();
+            return response;
+          }
+        }
+        // If the non-stream response is also not an error, throw
+        throw new Error(
+          // @ts-ignore
+          `Expected content-type to be ${EventStreamContentType}, Actual: ${contentType}`
+        );
+      }
+      // @ts-ignore
+      await getBytes(stageOne.body, getLines(getMessages(config.onmessage)));
+    } else {
+      // @ts-ignore
+      switch (config.responseType) {
+        case "arraybuffer":
+          // @ts-ignore
+          response.data = await stageOne.arrayBuffer();
+          break;
+        case "blob":
+          // @ts-ignore
+          response.data = await stageOne.blob();
+          break;
+        case "json":
+          // @ts-ignore
+          response.data = await stageOne.json();
+          break;
+        case "formData":
+          // @ts-ignore
+          response.data = await stageOne.formData();
+          break;
+        default:
+          // @ts-ignore
+          response.data = await stageOne.text();
+          break;
+      }
+    }
+  }
+
+  return response;
+}
+
+async function fetchAdapter(config: unknown) {
+  const request = createRequest(config);
+  const data = await getResponse(request, config);
+
+  return new Promise((resolve, reject) => {
+    if (data instanceof Error) {
+      reject(data);
+    } else {
+      // eslint-disable-next-line no-unused-expressions
+      // @ts-ignore
+      Object.prototype.toString.call(config.settle) === "[object Function]"
+        ? // @ts-ignore
+          config.settle(resolve, reject, data)
+        : // @ts-ignore
+          settle(resolve, reject, data);
+    }
+  });
+}
 
 const STATUS_NO_RETRY = [
   400, // Bad Request
@@ -65,7 +355,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     prompts: string[],
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void> | void | Promise<CallbackManagerForLLMRun>;
 
   /**
    * Called when an LLM/ChatModel in `streaming` mode produces a new token
@@ -74,7 +364,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     token: string,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
   /**
    * Called if an LLM/ChatModel run encounters an error
@@ -83,7 +373,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     err: Error,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
   /**
    * Called at the end of an LLM/ChatModel run, with the output and the run ID.
@@ -92,7 +382,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     output: LLMResult,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
   /**
    * Called at the start of a Chain run, with the chain name and inputs
@@ -103,7 +393,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     inputs: ChainValues,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void> | Promise<CallbackManagerForChainRun>;
 
   /**
    * Called if a Chain run encounters an error
@@ -112,7 +402,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     err: Error,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
   /**
    * Called at the end of a Chain run, with the outputs and the run ID.
@@ -121,7 +411,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     outputs: ChainValues,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
   /**
    * Called at the start of a Tool run, with the tool name and input
@@ -132,7 +422,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     input: string,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void> | Promise<CallbackManagerForToolRun>;
 
   /**
    * Called if a Tool run encounters an error
@@ -141,7 +431,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     err: Error,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
   /**
    * Called at the end of a Tool run, with the tool output and the run ID.
@@ -150,13 +440,9 @@ abstract class BaseCallbackHandlerMethodsClass {
     output: string,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
-  handleText?(
-    text: string,
-    runId: string,
-    parentRunId?: string
-  ): Promise<void> | void;
+  handleText?(text: string, runId: string, parentRunId?: string): Promise<void>;
 
   /**
    * Called when an agent is about to execute an action,
@@ -166,7 +452,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     action: AgentAction,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 
   /**
    * Called when an agent finishes execution, before it exits.
@@ -176,7 +462,7 @@ abstract class BaseCallbackHandlerMethodsClass {
     action: AgentFinish,
     runId: string,
     parentRunId?: string
-  ): Promise<void> | void;
+  ): Promise<void>;
 }
 
 type CallbackHandlerMethods = BaseCallbackHandlerMethodsClass;
@@ -458,6 +744,18 @@ abstract class BaseCallbackHandler
       input?: BaseCallbackHandlerInput
     ) => BaseCallbackHandler)(this);
   }
+
+  static fromMethods(methods: CallbackHandlerMethods) {
+    class Handler extends BaseCallbackHandler {
+      name = v4();
+
+      constructor() {
+        super();
+        Object.assign(this, methods);
+      }
+    }
+    return new Handler();
+  }
 }
 
 abstract class BaseCallbackManager extends BaseCallbackHandler {
@@ -555,6 +853,69 @@ class CallbackManagerForLLMRun
       })
     );
   }
+}
+
+export class CallbackManagerForToolRun
+  extends BaseRunManager
+  implements BaseCallbackManagerMethods
+{
+  getChild(): CallbackManager {
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    const manager = new CallbackManager(this.runId);
+    manager.setHandlers(this.inheritableHandlers);
+    return manager;
+  }
+
+  async handleToolError(err: Error): Promise<void> {
+    await Promise.all(
+      this.handlers.map(async (handler) => {
+        if (!handler.ignoreAgent) {
+          try {
+            await handler.handleToolError?.(err, this.runId, this._parentRunId);
+          } catch (err) {
+            console.error(
+              `Error in handler ${handler.constructor.name}, handleToolError: ${err}`
+            );
+          }
+        }
+      })
+    );
+  }
+
+  async handleToolEnd(output: string): Promise<void> {
+    await Promise.all(
+      this.handlers.map(async (handler) => {
+        if (!handler.ignoreAgent) {
+          try {
+            await handler.handleToolEnd?.(
+              output,
+              this.runId,
+              this._parentRunId
+            );
+          } catch (err) {
+            console.error(
+              `Error in handler ${handler.constructor.name}, handleToolEnd: ${err}`
+            );
+          }
+        }
+      })
+    );
+  }
+}
+
+export interface CallbackManagerOptions {
+  verbose?: boolean;
+  tracing?: boolean;
+}
+
+function ensureHandler(
+  handler: BaseCallbackHandler | CallbackHandlerMethods
+): BaseCallbackHandler {
+  if ("name" in handler) {
+    return handler;
+  }
+
+  return BaseCallbackHandler.fromMethods(handler);
 }
 
 class CallbackManager
@@ -771,6 +1132,7 @@ class CallbackManager
 }
 
 class ConsoleCallbackHandler extends BaseCallbackHandler {
+  name = "console_callback_handler" as const;
   async handleChainStart(chain: { name: string }) {
     console.log(`Entering new ${chain.name} chain...`);
   }
@@ -823,7 +1185,7 @@ abstract class Tool {
     this.callbackManager = callbackManager ?? getCallbackManager();
   }
   async call(arg: string, verbose = false) {
-    const _verbose = verbose ?? this.verbose;
+    const _verbose = (verbose ?? this.verbose).toString();
     await this.callbackManager.handleToolStart(
       { name: this.name },
       arg,
@@ -833,10 +1195,10 @@ abstract class Tool {
     try {
       result = await this._call(arg);
     } catch (e) {
-      await this.callbackManager.handleToolError(e as Error, _verbose);
+      await this.callbackManager.handleToolError?.(e as Error, _verbose);
       throw e;
     }
-    await this.callbackManager.handleToolEnd(result, _verbose);
+    await this.callbackManager.handleToolEnd?.(result, _verbose);
     return result;
   }
 }
@@ -902,19 +1264,20 @@ abstract class BaseChain {
         fullValues[key] = value;
       }
     }
+    const _verbose = this.verbose.toString();
     await this.callbackManager.handleChainStart(
       { name: this._chainType() },
       fullValues,
-      this.verbose
+      _verbose
     );
     let outputValues: ChainValues;
     try {
       outputValues = await this._call(fullValues);
     } catch (e) {
-      await this.callbackManager.handleChainError(e as Error, this.verbose);
+      await this.callbackManager.handleChainError?.(e as Error, _verbose);
       throw e;
     }
-    await this.callbackManager.handleChainEnd(outputValues, this.verbose);
+    await this.callbackManager.handleChainEnd?.(outputValues, _verbose);
     if (!(this.memory == null)) {
       await this.memory.saveContext(values, outputValues);
     }
@@ -1037,6 +1400,49 @@ class CallbackManagerForChainRun
   }
 }
 
+export type SerializedPromptTemplate = {
+  _type?: "prompt";
+  input_variables: string[];
+  template_format?: TemplateFormat;
+  template?: string;
+};
+
+export type SerializedFewShotTemplate = {
+  _type: "few_shot";
+  input_variables: string[];
+  examples: string | Record<string, string>[];
+  example_prompt?: SerializedPromptTemplate;
+  example_separator: string;
+  prefix?: string;
+  suffix?: string;
+  template_format: TemplateFormat;
+};
+
+export type SerializedMessagePromptTemplate = {
+  _type: "message";
+  input_variables: string[];
+  [key: string]: unknown;
+};
+
+/** Serialized Chat prompt template */
+export type SerializedChatPromptTemplate = {
+  _type?: "chat_prompt";
+  input_variables: string[];
+  template_format?: TemplateFormat;
+  prompt_messages: SerializedMessagePromptTemplate[];
+};
+
+export type SerializedBasePromptTemplate =
+  | SerializedFewShotTemplate
+  | SerializedPromptTemplate
+  | SerializedChatPromptTemplate;
+
+type SerializedLLMChain = {
+  _type: "llm_chain";
+  llm?: SerializedLLM;
+  prompt?: SerializedBasePromptTemplate;
+};
+
 class LLMChain extends BaseChain implements LLMChainInput {
   prompt: BasePromptTemplate;
 
@@ -1099,11 +1505,7 @@ class LLMChain extends BaseChain implements LLMChainInput {
       stop = values.stop;
     }
     const promptValue = await this.prompt.formatPromptValue(values);
-    const { generations } = await this.llm.generatePrompt(
-      [promptValue],
-      stop,
-      runManager?.getChild()
-    );
+    const { generations } = await this.llm.generatePrompt([promptValue], stop);
     return {
       [this.outputKey]: await this._getFinalOutput(
         generations[0],
@@ -1127,9 +1529,9 @@ class LLMChain extends BaseChain implements LLMChainInput {
    */
   async predict(
     values: ChainValues,
-    callbackManager?: CallbackManager
+    _callbackManager?: CallbackManager
   ): Promise<string> {
-    const output = await this.call(values, callbackManager);
+    const output = await this.call(values);
     return output[this.outputKey];
   }
 
@@ -1655,7 +2057,10 @@ class AgentExecutor extends BaseChain {
       if (this.returnIntermediateSteps) {
         return { ...returnValues, intermediateSteps: steps, ...additional };
       }
-      await this.callbackManager.handleAgentEnd(finishStep, this.verbose);
+      await this.callbackManager.handleAgentEnd?.(
+        finishStep,
+        this.verbose.toString()
+      );
       return { ...returnValues, ...additional };
     };
     while (this.shouldContinue(iterations)) {
@@ -1672,7 +2077,10 @@ class AgentExecutor extends BaseChain {
       }
       const newSteps = await Promise.all(
         actions.map(async (action) => {
-          await this.callbackManager.handleAgentAction(action, this.verbose);
+          await this.callbackManager.handleAgentAction?.(
+            action,
+            this.verbose.toString()
+          );
           const tool = toolsByName[action.tool?.toLowerCase()];
           const observation = tool
             ? await tool.call(action.toolInput, this.verbose)
@@ -1742,7 +2150,43 @@ const initializeAgentExecutor = async (
     callbackManager,
   });
 };
+interface BaseLanguageModelCallOptions {}
+interface BaseLLMParams extends BaseLanguageModelParams {
+  /**
+   * @deprecated Use `maxConcurrency` instead
+   */
+  concurrency?: number;
+  cache?: BaseCache | boolean;
+}
+abstract class BaseCache<T = Generation[]> {
+  abstract lookup(prompt: string, llmKey: string): Promise<T | null>;
 
+  abstract update(prompt: string, llmKey: string, value: T): Promise<void>;
+}
+const GLOBAL_MAP = new Map();
+const getCacheKey = (...strings: string[]): string =>
+  crypto.createHash("sha256").update(strings.join("_")).digest("base64");
+class InMemoryCache<T = Generation[]> extends BaseCache<T> {
+  private cache: Map<string, T>;
+
+  constructor(map?: Map<string, T>) {
+    super();
+    this.cache = map ?? new Map();
+  }
+
+  lookup(prompt: string, llmKey: string): Promise<T | null> {
+    return Promise.resolve(this.cache.get(getCacheKey(prompt, llmKey)) ?? null);
+  }
+
+  async update(prompt: string, llmKey: string, value: T): Promise<void> {
+    this.cache.set(getCacheKey(prompt, llmKey), value);
+  }
+
+  static global(): InMemoryCache {
+    return new InMemoryCache(GLOBAL_MAP);
+  }
+}
+const RUN_KEY = "__run";
 abstract class BaseLLM extends BaseLanguageModel {
   declare CallOptions: BaseLanguageModelCallOptions;
 
@@ -1905,7 +2349,7 @@ abstract class BaseLLM extends BaseLanguageModel {
     return "base_llm" as const;
   }
 }
-
+type Kwargs = Record<string, any>;
 interface OpenAIInput {
   /** Sampling temperature to use */
   temperature: number;
@@ -1957,6 +2401,481 @@ interface OpenAIInput {
    */
   timeout?: number;
 }
+interface OpenAICallOptions extends BaseLanguageModelCallOptions {
+  /**
+   * List of stop words to use when generating
+   */
+  stop?: string[];
+
+  /**
+   * Additional options to pass to the underlying axios request.
+   */
+  options?: AxiosRequestConfig;
+}
+
+abstract class LLM extends BaseLLM {
+  /**
+   * Run the LLM on the given prompt and input.
+   */
+  abstract _call(
+    prompt: string,
+    stop?: string[] | this["CallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): Promise<string>;
+
+  async _generate(
+    prompts: string[],
+    stop?: string[] | this["CallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): Promise<LLMResult> {
+    const generations: Generation[][] = [];
+    for (let i = 0; i < prompts.length; i += 1) {
+      const text = await this._call(prompts[i], stop, runManager);
+      generations.push([{ text }]);
+    }
+    return { generations };
+  }
+}
+
+interface OpenAIBaseInput {
+  /** Sampling temperature to use */
+  temperature: number;
+
+  /**
+   * Maximum number of tokens to generate in the completion. -1 returns as many
+   * tokens as possible given the prompt and the model's maximum context size.
+   */
+  maxTokens?: number;
+
+  /** Total probability mass of tokens to consider at each step */
+  topP: number;
+
+  /** Penalizes repeated tokens according to frequency */
+  frequencyPenalty: number;
+
+  /** Penalizes repeated tokens */
+  presencePenalty: number;
+
+  /** Number of completions to generate for each prompt */
+  n: number;
+
+  /** Dictionary used to adjust the probability of specific tokens being generated */
+  logitBias?: Record<string, number>;
+
+  /** Whether to stream the results or not. Enabling disables tokenUsage reporting */
+  streaming: boolean;
+
+  /** Model name to use */
+  modelName: string;
+
+  /** Holds any additional parameters that are valid to pass to {@link
+   * https://platform.openai.com/docs/api-reference/completions/create |
+   * `openai.createCompletion`} that are not explicitly specified on this class.
+   */
+  modelKwargs?: Record<string, any>;
+
+  /** List of stop words to use when generating */
+  stop?: string[];
+
+  /**
+   * Timeout to use when making requests to OpenAI.
+   */
+  timeout?: number;
+}
+
+export interface OpenAIChatInput extends OpenAIBaseInput {
+  /** ChatGPT messages to pass as a prefix to the prompt */
+  prefixMessages?: ChatCompletionRequestMessage[];
+}
+
+export declare interface AzureOpenAIInput {
+  /**
+   * API version to use when making requests to Azure OpenAI.
+   */
+  azureOpenAIApiVersion?: string;
+
+  /**
+   * API key to use when making requests to Azure OpenAI.
+   */
+  azureOpenAIApiKey?: string;
+
+  /**
+   * Azure OpenAI API instance name to use when making requests to Azure OpenAI.
+   * this is the name of the instance you created in the Azure portal.
+   * e.g. "my-openai-instance"
+   * this will be used in the endpoint URL: https://my-openai-instance.openai.azure.com/openai/deployments/{DeploymentName}/
+   */
+  azureOpenAIApiInstanceName?: string;
+
+  /**
+   * Azure OpenAI API deployment name to use for completions when making requests to Azure OpenAI.
+   * This is the name of the deployment you created in the Azure portal.
+   * e.g. "my-openai-deployment"
+   * this will be used in the endpoint URL: https://{InstanceName}.openai.azure.com/openai/deployments/my-openai-deployment/
+   */
+  azureOpenAIApiDeploymentName?: string;
+
+  /**
+   * Azure OpenAI API deployment name to use for embedding when making requests to Azure OpenAI.
+   * This is the name of the deployment you created in the Azure portal.
+   * This will fallback to azureOpenAIApiDeploymentName if not provided.
+   * e.g. "my-openai-deployment"
+   * this will be used in the endpoint URL: https://{InstanceName}.openai.azure.com/openai/deployments/my-openai-deployment/
+   */
+  azureOpenAIApiEmbeddingsDeploymentName?: string;
+
+  /**
+   * Azure OpenAI API deployment name to use for completions when making requests to Azure OpenAI.
+   * Completions are only available for gpt-3.5-turbo and text-davinci-003 deployments.
+   * This is the name of the deployment you created in the Azure portal.
+   * This will fallback to azureOpenAIApiDeploymentName if not provided.
+   * e.g. "my-openai-deployment"
+   * this will be used in the endpoint URL: https://{InstanceName}.openai.azure.com/openai/deployments/my-openai-deployment/
+   */
+  azureOpenAIApiCompletionsDeploymentName?: string;
+}
+
+class OpenAIChat extends LLM implements OpenAIChatInput, AzureOpenAIInput {
+  declare CallOptions: OpenAICallOptions;
+
+  temperature = 1;
+
+  topP = 1;
+
+  frequencyPenalty = 0;
+
+  presencePenalty = 0;
+
+  n = 1;
+
+  logitBias?: Record<string, number>;
+
+  maxTokens?: number;
+
+  modelName = "gpt-3.5-turbo";
+
+  prefixMessages?: ChatCompletionRequestMessage[];
+
+  modelKwargs?: OpenAIChatInput["modelKwargs"];
+
+  timeout?: number;
+
+  stop?: string[];
+
+  streaming = false;
+
+  azureOpenAIApiVersion?: string;
+
+  azureOpenAIApiKey?: string;
+
+  azureOpenAIApiInstanceName?: string;
+
+  azureOpenAIApiDeploymentName?: string;
+
+  private client: OpenAIApi;
+
+  private clientConfig: ConfigurationParameters & {
+    isJsonMime: (mime: string) => boolean;
+  };
+
+  constructor(
+    fields?: Partial<OpenAIChatInput> &
+      Partial<AzureOpenAIInput> &
+      BaseLLMParams & {
+        openAIApiKey?: string;
+      },
+    configuration?: ConfigurationParameters
+  ) {
+    super(fields ?? {});
+
+    const apiKey =
+      fields?.openAIApiKey ??
+      (typeof process !== "undefined"
+        ? // eslint-disable-next-line no-process-env
+          process.env?.OPENAI_API_KEY
+        : undefined);
+
+    const azureApiKey =
+      fields?.azureOpenAIApiKey ??
+      (typeof process !== "undefined"
+        ? // eslint-disable-next-line no-process-env
+          process.env?.AZURE_OPENAI_API_KEY
+        : undefined);
+    if (!azureApiKey && !apiKey) {
+      throw new Error("(Azure) OpenAI API key not found");
+    }
+
+    const azureApiInstanceName =
+      fields?.azureOpenAIApiInstanceName ??
+      (typeof process !== "undefined"
+        ? // eslint-disable-next-line no-process-env
+          process.env?.AZURE_OPENAI_API_INSTANCE_NAME
+        : undefined);
+
+    const azureApiDeploymentName =
+      fields?.azureOpenAIApiDeploymentName ??
+      (typeof process !== "undefined"
+        ? // eslint-disable-next-line no-process-env
+          process.env?.AZURE_OPENAI_API_DEPLOYMENT_NAME
+        : undefined);
+
+    const azureApiVersion =
+      fields?.azureOpenAIApiVersion ??
+      (typeof process !== "undefined"
+        ? // eslint-disable-next-line no-process-env
+          process.env?.AZURE_OPENAI_API_VERSION
+        : undefined);
+
+    this.modelName = fields?.modelName ?? this.modelName;
+    this.prefixMessages = fields?.prefixMessages ?? this.prefixMessages;
+    this.modelKwargs = fields?.modelKwargs ?? {};
+    this.timeout = fields?.timeout;
+
+    this.temperature = fields?.temperature ?? this.temperature;
+    this.topP = fields?.topP ?? this.topP;
+    this.frequencyPenalty = fields?.frequencyPenalty ?? this.frequencyPenalty;
+    this.presencePenalty = fields?.presencePenalty ?? this.presencePenalty;
+    this.n = fields?.n ?? this.n;
+    this.logitBias = fields?.logitBias;
+    this.maxTokens = fields?.maxTokens;
+    this.stop = fields?.stop;
+
+    this.streaming = fields?.streaming ?? false;
+
+    this.azureOpenAIApiVersion = azureApiVersion;
+    this.azureOpenAIApiKey = azureApiKey;
+    this.azureOpenAIApiInstanceName = azureApiInstanceName;
+    this.azureOpenAIApiDeploymentName = azureApiDeploymentName;
+
+    if (this.streaming && this.n > 1) {
+      throw new Error("Cannot stream results when n > 1");
+    }
+
+    if (this.azureOpenAIApiKey) {
+      if (!this.azureOpenAIApiInstanceName) {
+        throw new Error("Azure OpenAI API instance name not found");
+      }
+      if (!this.azureOpenAIApiDeploymentName) {
+        throw new Error("Azure OpenAI API deployment name not found");
+      }
+      if (!this.azureOpenAIApiVersion) {
+        throw new Error("Azure OpenAI API version not found");
+      }
+    }
+
+    this.clientConfig = {
+      apiKey,
+      isJsonMime: () => false,
+      ...configuration,
+    };
+    this.client = new OpenAIApi(this.clientConfig);
+  }
+
+  /**
+   * Get the parameters used to invoke the model
+   */
+  invocationParams(): Omit<CreateChatCompletionRequest, "messages"> {
+    return {
+      model: this.modelName,
+      temperature: this.temperature,
+      top_p: this.topP,
+      frequency_penalty: this.frequencyPenalty,
+      presence_penalty: this.presencePenalty,
+      n: this.n,
+      logit_bias: this.logitBias,
+      max_tokens: this.maxTokens === -1 ? undefined : this.maxTokens,
+      stop: this.stop,
+      stream: this.streaming,
+      ...this.modelKwargs,
+    };
+  }
+
+  /** @ignore */
+  _identifyingParams() {
+    return {
+      model_name: this.modelName,
+      ...this.invocationParams(),
+      ...this.clientConfig,
+    };
+  }
+
+  /**
+   * Get the identifying parameters for the model
+   */
+  identifyingParams() {
+    return {
+      model_name: this.modelName,
+      ...this.invocationParams(),
+      ...this.clientConfig,
+    };
+  }
+
+  private formatMessages(prompt: string): ChatCompletionRequestMessage[] {
+    const message: ChatCompletionRequestMessage = {
+      role: "user",
+      content: prompt,
+    };
+    return this.prefixMessages ? [...this.prefixMessages, message] : [message];
+  }
+
+  /** @ignore */
+  async _call(
+    prompt: string,
+    stopOrOptions?: string[] | this["CallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): Promise<string> {
+    const stop = Array.isArray(stopOrOptions)
+      ? stopOrOptions
+      : stopOrOptions?.stop;
+    const options = Array.isArray(stopOrOptions)
+      ? {}
+      : stopOrOptions?.options ?? {};
+
+    if (this.stop && stop) {
+      throw new Error("Stop found in input and default params");
+    }
+
+    const params = this.invocationParams();
+    params.stop = stop ?? params.stop;
+
+    const data = params.stream
+      ? await new Promise<CreateChatCompletionResponse>((resolve, reject) => {
+          let response: CreateChatCompletionResponse;
+          let rejected = false;
+          this.completionWithRetry(
+            {
+              ...params,
+              messages: this.formatMessages(prompt),
+            },
+            {
+              ...options,
+              adapter: fetchAdapter, // default adapter doesn't do streaming
+              responseType: "stream",
+              // @ts-ignore
+              onmessage: (event) => {
+                if (event.data?.trim?.() === "[DONE]") {
+                  resolve(response);
+                } else {
+                  const message = JSON.parse(event.data) as {
+                    id: string;
+                    object: string;
+                    created: number;
+                    model: string;
+                    choices: Array<{
+                      index: number;
+                      finish_reason: string | null;
+                      delta: { content?: string; role?: string };
+                    }>;
+                  };
+
+                  // on the first message set the response properties
+                  if (!response) {
+                    response = {
+                      id: message.id,
+                      object: message.object,
+                      created: message.created,
+                      model: message.model,
+                      choices: [],
+                    };
+                  }
+
+                  // on all messages, update choice
+                  const part = message.choices[0];
+                  if (part != null) {
+                    let choice = response.choices.find(
+                      (c) => c.index === part.index
+                    );
+
+                    if (!choice) {
+                      choice = {
+                        index: part.index,
+                        finish_reason: part.finish_reason ?? undefined,
+                      };
+                      response.choices.push(choice);
+                    }
+
+                    if (!choice.message) {
+                      choice.message = {
+                        role: part.delta
+                          ?.role as ChatCompletionResponseMessageRoleEnum,
+                        content: part.delta?.content ?? "",
+                      };
+                    }
+
+                    choice.message.content += part.delta?.content ?? "";
+                    // eslint-disable-next-line no-void
+                    void runManager?.handleLLMNewToken(
+                      part.delta?.content ?? ""
+                    );
+                  }
+                }
+              },
+            }
+          ).catch((error) => {
+            if (!rejected) {
+              rejected = true;
+              reject(error);
+            }
+          });
+        })
+      : await this.completionWithRetry(
+          {
+            ...params,
+            messages: this.formatMessages(prompt),
+          },
+          options
+        );
+
+    return data.choices[0].message?.content ?? "";
+  }
+
+  /** @ignore */
+  async completionWithRetry(
+    request: CreateChatCompletionRequest,
+    // @ts-ignore
+    options?: StreamingAxiosConfiguration
+  ) {
+    if (!this.client) {
+      const endpoint = this.azureOpenAIApiKey
+        ? `https://${this.azureOpenAIApiInstanceName}.openai.azure.com/openai/deployments/${this.azureOpenAIApiDeploymentName}`
+        : this.clientConfig.basePath;
+      const clientConfig = new Configuration({
+        ...this.clientConfig,
+        basePath: endpoint,
+        baseOptions: {
+          timeout: this.timeout,
+          ...this.clientConfig.baseOptions,
+        },
+      });
+      this.client = new OpenAIApi(clientConfig);
+    }
+    const axiosOptions = {
+      ...this.clientConfig.baseOptions,
+      ...options,
+    };
+    if (this.azureOpenAIApiKey) {
+      axiosOptions.headers = {
+        "api-key": this.azureOpenAIApiKey,
+        ...axiosOptions.headers,
+      };
+      axiosOptions.params = {
+        "api-version": this.azureOpenAIApiVersion,
+        ...axiosOptions.params,
+      };
+    }
+    return this.caller
+      .call(
+        this.client.createChatCompletion.bind(this.client),
+        request,
+        axiosOptions
+      )
+      .then((res) => res.data);
+  }
+
+  _llmType() {
+    return "openai";
+  }
+}
 
 class OpenAI extends BaseLLM implements OpenAIInput {
   declare CallOptions: OpenAICallOptions;
@@ -1989,8 +2908,10 @@ class OpenAI extends BaseLLM implements OpenAIInput {
 
   streaming = false;
 
+  // @ts-ignore
   private client: OpenAIApi;
 
+  // @ts-ignore
   private clientConfig: ConfigurationParameters;
 
   constructor(
@@ -2112,8 +3033,10 @@ class OpenAI extends BaseLLM implements OpenAIInput {
     const options = Array.isArray(stopOrOptions)
       ? {}
       : stopOrOptions?.options ?? {};
+    // @ts-ignore
     const subPrompts = chunkArray(prompts, this.batchSize);
     const choices: CreateCompletionResponseChoicesInner[] = [];
+    // @ts-ignore
     const tokenUsage: TokenUsage = {};
 
     if (this.stop && stop) {
@@ -2129,6 +3052,7 @@ class OpenAI extends BaseLLM implements OpenAIInput {
           "max_tokens set to -1 not supported for multiple inputs"
         );
       }
+      // @ts-ignore
       params.max_tokens = await calculateMaxTokens({
         prompt: prompts[0],
         // Cast here to allow for other models that may not fit the union
@@ -2150,6 +3074,7 @@ class OpenAI extends BaseLLM implements OpenAIInput {
               {
                 ...options,
                 responseType: "stream",
+                // @ts-ignore
                 onmessage: (event) => {
                   if (event.data?.trim?.() === "[DONE]") {
                     resolve({
@@ -2221,7 +3146,9 @@ class OpenAI extends BaseLLM implements OpenAIInput {
       }
     }
 
+    // @ts-ignore
     const generations = chunkArray(choices, this.n).map((promptChoices) =>
+      // @ts-ignore
       promptChoices.map((choice) => ({
         text: choice.text ?? "",
         generationInfo: {
@@ -2239,6 +3166,7 @@ class OpenAI extends BaseLLM implements OpenAIInput {
   /** @ignore */
   async completionWithRetry(
     request: CreateCompletionRequest,
+    // @ts-ignore
     options?: StreamingAxiosConfiguration
   ) {
     if (!this.client) {
@@ -2294,6 +3222,7 @@ export class PromptLayerOpenAI extends OpenAI {
 
   async completionWithRetry(
     request: CreateCompletionRequest,
+    // @ts-ignore
     options?: StreamingAxiosConfiguration
   ) {
     if (request.stream) {
@@ -2655,6 +3584,7 @@ class FsRemoveText extends Tool {
 }
 
 abstract class BasePromptTemplate implements BasePromptTemplateInput {
+  // @ts-ignore
   inputVariables: string[];
 
   outputParser?: BaseOutputParser;
@@ -2725,6 +3655,7 @@ abstract class BasePromptTemplate implements BasePromptTemplateInput {
 abstract class BaseStringPromptTemplate extends BasePromptTemplate {
   async formatPromptValue(values: InputValues): Promise<BasePromptValue> {
     const formattedPrompt = await this.format(values);
+    // @ts-ignore
     return new StringPromptValue(formattedPrompt);
   }
 }
@@ -2878,6 +3809,7 @@ class PromptTemplate
   extends BaseStringPromptTemplate
   implements PromptTemplateInput
 {
+  // @ts-ignore
   template: string;
 
   templateFormat: TemplateFormat = "f-string";
@@ -2896,6 +3828,7 @@ class PromptTemplate
         );
       }
       checkValidTemplate(
+        // @ts-ignore
         this.template,
         this.templateFormat,
         totalInputVariables
