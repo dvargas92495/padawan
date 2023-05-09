@@ -2,13 +2,10 @@
   "name": "padawan",
   "description": "A young apprentice, strong with the force, learning to master the ways of your repos.",
   "dependencies": {
-    "@dqbd/tiktoken": "^1.0.7",
     "@octokit/rest": "^19.0.7",
     "@samepage/backend": "^0.64.0",
     "@samepage/scripts": "^0.64.0",
-    "openai": "^3.2.1",
-    "p-queue": "^7.3.4",
-    "p-retry": "^5.1.2"
+    "openai": "^3.2.1"
   },
   "devDependencies": {
     "@octokit/webhooks-types": "^6.11.0",
