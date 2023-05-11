@@ -395,8 +395,16 @@ const zArgs = z.object({
   type: z.literal("User").or(z.literal("Organization")),
 });
 
-const develop: Handler = async (evt: unknown) => {
+const develop = async (evt: Parameters<Handler>[0]) => {
   const { issue, repo, owner, type: _type } = zArgs.parse(evt);
+  console.log(
+    "I've been assigned to issue",
+    issue,
+    "from",
+    repo,
+    "within",
+    owner
+  );
   // TODO - need to refresh token if it's expired
   // const auth = await getInstallationToken(type, owner);
   process.chdir("/tmp");

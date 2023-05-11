@@ -1,3 +1,5 @@
+dist
+out
 .env
 node_modules
 scripts/debug.ts

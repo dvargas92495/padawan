@@ -1,10 +1,14 @@
 {
   "name": "padawan",
   "description": "A young apprentice, strong with the force, learning to master the ways of your repos.",
+  "scripts": {
+    "start": "samepage start"
+  },
   "dependencies": {
     "@octokit/rest": "^19.0.7",
     "@samepage/backend": "^0.64.0",
-    "@samepage/scripts": "^0.64.0",
+    "@samepage/scripts": "^0.64.14",
+    "express": "^4.18.2",
     "openai": "^3.2.1"
   },
   "devDependencies": {
