@@ -7,40 +7,12 @@ import { OpenAIApi, Configuration } from "openai";
 // import getInstallationToken from "../src/utils/getInstallationToken";
 // import appClient from "../src/utils/appClient";
 
-type Generation = {
-  text: string;
-  generationInfo?: Record<string, any>;
-};
-
-type LLMResult = {
-  generations: Generation[][];
-  llmOutput?: Record<string, any>;
-};
-
-type ChainValues = Record<string, any>;
-
-type AgentAction = {
-  tool: string;
-  toolInput: string;
-  log: string;
-};
-
-type AgentFinish = {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  returnValues: Record<string, any>;
-  log: string;
-};
-
 type AgentStep = {
-  action: AgentAction;
   observation: string;
+  action: string;
+  actionInput: string;
+  thought: string;
 };
-
-interface BaseCallbackHandlerInput {
-  ignoreLLM?: boolean;
-  ignoreChain?: boolean;
-  ignoreAgent?: boolean;
-}
 
 abstract class Tool {
   verbose: boolean;
@@ -56,8 +28,6 @@ abstract class Tool {
     return await this._call(arg);
   }
 }
-
-// ########## REFACTOR BREAK ###############
 
 class GithubCodeSearchTool extends Tool {
   name = "Github Code Search";
@@ -393,10 +363,19 @@ const zArgs = z.object({
   owner: z.string(),
   repo: z.string(),
   type: z.literal("User").or(z.literal("Organization")),
+  missionUuid: z.string(),
+  webhookUrl: z.string(),
 });
 
 const develop = async (evt: Parameters<Handler>[0]) => {
-  const { issue, repo, owner, type: _type } = zArgs.parse(evt);
+  const {
+    issue,
+    repo,
+    owner,
+    type: _type,
+    webhookUrl,
+    missionUuid,
+  } = zArgs.parse(evt);
   console.log(
     "I've been assigned to issue",
     issue,
@@ -407,7 +386,6 @@ const develop = async (evt: Parameters<Handler>[0]) => {
   );
   // TODO - need to refresh token if it's expired
   // const auth = await getInstallationToken(type, owner);
-  process.chdir("/tmp");
   const auth = process.env.GITHUB_TOKEN;
   const tools: Tool[] = [
     new GithubCodeSearchTool({ auth }),
@@ -429,30 +407,38 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     new FsListFiles(),
   ];
   const template = ({
-    scratch,
+    steps,
   }: {
-    scratch: string;
-  }) => `Answer the following questions as best you can. You have access to the following tools:
+    steps: AgentStep[];
+  }) => `You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue #${issue}. Your mission is to create a pull request that satisfies the requirements of the issue.
+  
+You have access to the following tools:
 
 ${tools.map((tool) => `${tool.name}: ${tool.description}`).join("\n")}
 
-Use the following format:
+Now that I have given you the context of the mission, and have given you the tools you'll need to complete the mission, you will say what needs to be done using the following format:
 
-Question: the input question you must answer
-Thought: you should always think about what to do
+Thought: you should always think transparently about what to do next before doing it
 Action: the action to take, should be one of [${tools
     .map((tool) => tool.name)
     .join("\n")}]
 Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
+${
+  steps.length
+    ? `
+Here is a history of the steps we have previously taken so far in completing this mission:
 
-Begin!
-
-Question: You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue ${issue}. Create a pull request that will close this issue.
-Thought: ${scratch}`;
+${steps
+  .flatMap((step) => [
+    `Thought: ${step.thought}`,
+    `Action: ${step.action}`,
+    `Action Input: ${step.actionInput}`,
+    `Observation: ${step.observation}`,
+  ])
+  .join("\n")}`
+    : ""
+}
+Begin!`;
 
   const toolsByName = Object.fromEntries(
     tools.map((t) => [t.name.toLowerCase(), t])
@@ -466,15 +452,9 @@ Thought: ${scratch}`;
     })
   );
   while (iterations < MAX_STEPS) {
-    const thoughts = steps.reduce(
-      (thoughts, { action, observation }) =>
-        thoughts +
-        [action.log, `Observation: ${observation}`, "Thought:"].join("\n"),
-      ""
-    );
-    const promptValue = template({ scratch: thoughts });
+    const promptValue = template({ steps });
 
-    console.log("Next thoughts", thoughts);
+    console.log("Sending prompt to GPT");
     const data = await openAiApiClient
       .createChatCompletion({
         stop: undefined,
@@ -492,33 +472,34 @@ Thought: ${scratch}`;
       .catch((e) => Promise.reject(JSON.stringify(e.response.data)));
 
     const generation = data.choices[0].message?.content ?? "";
-    console.log("Generated:", generation);
-    const output = generation.includes("Final Answer:")
-      ? {
-          response: generation.split("Final Answer:").slice(-1)[0].trim(),
-          log: generation,
-          finished: true as const,
-        }
-      : {
-          tool: /Action: (.*)/.exec(generation)?.[1].trim() || "",
-          toolInput:
-            /Action Input: (.*)/
-              .exec(generation)?.[2]
-              ?.trim()
-              .replace(/^"+|"+$/g, "") ?? "",
-          log: generation,
-          finished: false as const,
-        };
+    console.log("Generated response from GPT");
+    const output = {
+      thought: /Thought: (.*)/.exec(generation)?.[1]?.trim() ?? "",
+      action: /Action: (.*)/.exec(generation)?.[1]?.trim() ?? "",
+      actionInput: /Action Input: (.*)/.exec(generation)?.[1] ?? "",
+      log: generation,
+    };
 
-    if (output.finished) {
-      finalOutput = output.response;
-      break;
-    }
-    const tool = toolsByName[output.tool.toLowerCase()];
+    const tool = toolsByName[output.action.toLowerCase()];
     const observation = tool
-      ? await tool.call(output.toolInput)
-      : `${output.tool} is not a valid tool, try another one.`;
-    steps.push({ action: output, observation });
+      ? await tool.call(output.actionInput)
+      : `${output.action} is not a valid tool, try another one.`;
+    const step = {
+      thought: output.thought,
+      action: output.action,
+      actionInput: output.actionInput,
+      observation,
+    };
+    await fetch(webhookUrl, {
+      method: "POST",
+      body: JSON.stringify({
+        method: "ADD_STEP",
+        missionUuid,
+        step,
+      }),
+    });
+    console.log("pushed step to", webhookUrl);
+    steps.push(step);
     iterations++;
   }
   const finish = finalOutput || "Agent stopped due to max iterations.";

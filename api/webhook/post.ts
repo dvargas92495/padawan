@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { WebhookEvent } from "@octokit/webhooks-types";
 import getInstallationToken from "src/utils/getInstallationToken";
 import { Lambda } from "@aws-sdk/client-lambda";
+import { v4 } from "uuid";
 
 const logic = async (args: Record<string, unknown>) => {
   const event = args as WebhookEvent;
@@ -17,14 +18,43 @@ const logic = async (args: Record<string, unknown>) => {
     });
     if (event.label?.name === "padawan") {
       const lambda = new Lambda({});
+      const missionUuid = v4();
+      const { name, owner } = event.repository;
+      // TODO: ideally this is stored with and fetched from the github app or the owner profile
+      const webhookUrl = await octokit.repos
+        .getContent({
+          owner: owner.login,
+          repo: name,
+          path: "package.json",
+        })
+        .then((r) => {
+          if ("type" in r.data && r.data.type === "file") {
+            const json = JSON.parse(Buffer.from(r.data.content).toString());
+            return json.padawan?.webhookUrl || "";
+          }
+          return "";
+        })
+        .catch(() => "");
+      const issue = event.issue.number;
+      await fetch(webhookUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          missionUuid,
+          method: "CREATE",
+          label: `Issue #${issue} from ${owner}/${name}`,
+        }),
+      });
+
       await lambda.invoke({
         FunctionName: "padawan-dev-develop",
         Payload: Buffer.from(
           JSON.stringify({
             issue: event.issue?.number || 0,
             owner: event.repository?.owner?.login || "",
-            repo: event.repository?.name || "",
+            repo: event.repository.name,
             type: event.sender.type,
+            missionUuid: v4(),
+            webhookUrl,
           })
         ),
       });
