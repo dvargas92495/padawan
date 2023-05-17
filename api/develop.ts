@@ -4,6 +4,7 @@ import { Octokit } from "@octokit/rest";
 import { execSync, ChildProcess } from "child_process";
 import fs from "fs";
 import { OpenAIApi, Configuration } from "openai";
+import { v4 } from "uuid";
 // import getInstallationToken from "../src/utils/getInstallationToken";
 // import appClient from "../src/utils/appClient";
 
@@ -419,9 +420,9 @@ ${tools.map((tool) => `${tool.name}: ${tool.description}`).join("\n")}
 Now that I have given you the context of the mission, and have given you the tools you'll need to complete the mission, you will say what needs to be done using the following format:
 
 Thought: you should always think transparently about what to do next before doing it
-Action: the action to take, should be one of [${tools
+Action: the action to take. Must be exactly one of [${tools
     .map((tool) => tool.name)
-    .join("\n")}]
+    .join(",")}]
 Action Input: the input to the action
 ${
   steps.length
@@ -438,7 +439,7 @@ ${steps
   .join("\n")}`
     : ""
 }
-Begin!`;
+What is the next step?`;
 
   const toolsByName = Object.fromEntries(
     tools.map((t) => [t.name.toLowerCase(), t])
@@ -474,32 +475,41 @@ Begin!`;
     const generation = data.choices[0].message?.content ?? "";
     console.log("Generated response from GPT");
     const output = {
+      uuid: v4(),
       thought: /Thought: (.*)/.exec(generation)?.[1]?.trim() ?? "",
       action: /Action: (.*)/.exec(generation)?.[1]?.trim() ?? "",
-      actionInput: /Action Input: (.*)/.exec(generation)?.[1] ?? "",
-      log: generation,
-    };
-
-    const tool = toolsByName[output.action.toLowerCase()];
-    const observation = tool
-      ? await tool.call(output.actionInput)
-      : `${output.action} is not a valid tool, try another one.`;
-    const step = {
-      thought: output.thought,
-      action: output.action,
-      actionInput: output.actionInput,
-      observation,
+      actionInput: /Action Input: (.*)$/s.exec(generation)?.[1]?.trim() ?? "",
+      generation,
     };
     await fetch(webhookUrl, {
       method: "POST",
       body: JSON.stringify({
         method: "ADD_STEP",
         missionUuid,
-        step,
+        step: output,
       }),
     });
     console.log("pushed step to", webhookUrl);
-    steps.push(step);
+
+    const tool = toolsByName[output.action.toLowerCase()];
+    const observation = tool
+      ? await tool.call(output.actionInput).catch((e) => e.message)
+      : `"${
+          output.action
+        }" is not a valid tool, try another one. As a reminder, your options are [${tools
+          .map((tool) => tool.name)
+          .join(",")}].`;
+
+    await fetch(webhookUrl, {
+      method: "POST",
+      body: JSON.stringify({
+        method: "RECORD_OBSERVATION",
+        stepUuid: output.uuid,
+        observation,
+      }),
+    });
+    console.log("recorded observation", webhookUrl);
+    steps.push({ ...output, observation });
     iterations++;
   }
   const finish = finalOutput || "Agent stopped due to max iterations.";
