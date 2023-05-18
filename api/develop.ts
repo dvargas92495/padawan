@@ -74,7 +74,7 @@ class GithubIssueGetTool extends Tool {
     return this.octokit.issues
       .get(JSON.parse(input.trim().replace(/^```/, "").replace(/```$/, "")))
       .then((res) => {
-        return JSON.stringify(res.data, null, 2);
+        return res.data.body || "The issue is empty.";
       })
       .catch((e) => {
         return JSON.stringify(e.response.data);
@@ -452,10 +452,25 @@ What is the next step?`;
       apiKey: process.env.OPENAI_API_KEY || "",
     })
   );
+
+  const webhook = (data: Record<string, unknown>) =>
+    fetch(webhookUrl, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }).then((r) => r.json());
+
   while (iterations < MAX_STEPS) {
+    const signal = await webhook({
+      method: "GET_STATUS",
+      missionUuid,
+    });
+    if (signal.status === "STOP") {
+      finalOutput = "Mission stopped due to an interruption signal.";
+      break;
+    }
+
     const promptValue = template({ steps });
 
-    console.log("Sending prompt to GPT");
     const data = await openAiApiClient
       .createChatCompletion({
         stop: undefined,
@@ -473,7 +488,6 @@ What is the next step?`;
       .catch((e) => Promise.reject(JSON.stringify(e.response.data)));
 
     const generation = data.choices[0].message?.content ?? "";
-    console.log("Generated response from GPT");
     const output = {
       uuid: v4(),
       thought: /Thought: (.*)/.exec(generation)?.[1]?.trim() ?? "",
@@ -481,15 +495,11 @@ What is the next step?`;
       actionInput: /Action Input: (.*)$/s.exec(generation)?.[1]?.trim() ?? "",
       generation,
     };
-    await fetch(webhookUrl, {
-      method: "POST",
-      body: JSON.stringify({
-        method: "ADD_STEP",
-        missionUuid,
-        step: output,
-      }),
+    await webhook({
+      method: "ADD_STEP",
+      missionUuid,
+      step: output,
     });
-    console.log("pushed step to", webhookUrl);
 
     const tool = toolsByName[output.action.toLowerCase()];
     const observation = tool
@@ -500,20 +510,20 @@ What is the next step?`;
           .map((tool) => tool.name)
           .join(",")}].`;
 
-    await fetch(webhookUrl, {
-      method: "POST",
-      body: JSON.stringify({
-        method: "RECORD_OBSERVATION",
-        stepUuid: output.uuid,
-        observation,
-      }),
+    await webhook({
+      method: "RECORD_OBSERVATION",
+      stepUuid: output.uuid,
+      observation,
     });
-    console.log("recorded observation", webhookUrl);
     steps.push({ ...output, observation });
     iterations++;
   }
   const finish = finalOutput || "Agent stopped due to max iterations.";
-  console.log("FINAL", finish);
+  await webhook({
+    method: "FINISH_MISSION",
+    finish,
+    missionUuid,
+  });
 };
 
 export default develop;
