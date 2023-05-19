@@ -5,6 +5,7 @@ import { execSync, ChildProcess } from "child_process";
 import fs from "fs";
 import { OpenAIApi, Configuration } from "openai";
 import { v4 } from "uuid";
+import { PineconeClient } from "@pinecone-database/pinecone";
 // import getInstallationToken from "../src/utils/getInstallationToken";
 // import appClient from "../src/utils/appClient";
 
@@ -357,8 +358,6 @@ class FsRemoveText extends Tool {
   }
 }
 
-const MAX_STEPS = 15;
-
 const zArgs = z.object({
   issue: z.number(),
   owner: z.string(),
@@ -366,6 +365,7 @@ const zArgs = z.object({
   type: z.literal("User").or(z.literal("Organization")),
   missionUuid: z.string(),
   webhookUrl: z.string(),
+  maxSteps: z.number().default(3), // 15
 });
 
 const develop = async (evt: Parameters<Handler>[0]) => {
@@ -376,6 +376,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     type: _type,
     webhookUrl,
     missionUuid,
+    maxSteps,
   } = zArgs.parse(evt);
   console.log(
     "I've been assigned to issue",
@@ -407,44 +408,20 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     new ProcessChDir(),
     new FsListFiles(),
   ];
-  const template = ({
-    steps,
-  }: {
-    steps: AgentStep[];
-  }) => `You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue #${issue}. Your mission is to create a pull request that satisfies the requirements of the issue.
-  
-You have access to the following tools:
-
-${tools.map((tool) => `${tool.name}: ${tool.description}`).join("\n")}
-
-Now that I have given you the context of the mission, and have given you the tools you'll need to complete the mission, you will say what needs to be done using the following format:
-
-Thought: you should always think transparently about what to do next before doing it
-Action: the action to take. Must be exactly one of [${tools
-    .map((tool) => tool.name)
-    .join(",")}]
-Action Input: the input to the action
-${
-  steps.length
-    ? `
-Here is a history of the steps we have previously taken so far in completing this mission:
-
-${steps
-  .flatMap((step) => [
-    `Thought: ${step.thought}`,
-    `Action: ${step.action}`,
-    `Action Input: ${step.actionInput}`,
-    `Observation: ${step.observation}`,
-  ])
-  .join("\n")}`
-    : ""
-}
-What is the next step?`;
 
   const toolsByName = Object.fromEntries(
     tools.map((t) => [t.name.toLowerCase(), t])
   );
   const steps: AgentStep[] = [];
+  const formatSteps = () =>
+    steps
+      .map(
+        (s, i) =>
+          `${i + 1}. ${s.thought}. Executed \`${s.action}\` with input "${
+            s.actionInput
+          }". ${s.observation}`
+      )
+      .join("\n");
   let iterations = 0;
   let finalOutput = "";
   const openAiApiClient = new OpenAIApi(
@@ -452,6 +429,12 @@ What is the next step?`;
       apiKey: process.env.OPENAI_API_KEY || "",
     })
   );
+  const pinecone = new PineconeClient();
+  await pinecone.init({
+    apiKey: process.env.PINECONE_API_KEY || "",
+    environment: process.env.PINECONE_ENVIRONMENT || "development",
+  });
+  const missionIndex = pinecone.Index("missions");
 
   const webhook = (data: Record<string, unknown>) =>
     fetch(webhookUrl, {
@@ -459,7 +442,7 @@ What is the next step?`;
       body: JSON.stringify(data),
     }).then((r) => r.json());
 
-  while (iterations < MAX_STEPS) {
+  while (iterations < maxSteps) {
     const signal = await webhook({
       method: "GET_STATUS",
       missionUuid,
@@ -468,8 +451,24 @@ What is the next step?`;
       finalOutput = "Mission stopped due to an interruption signal.";
       break;
     }
+    const template = `You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue #${issue}. Your mission (id# ${missionUuid}) is to create a pull request that satisfies the requirements of the issue.
+  
+You have access to the following tools:
+${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")}
 
-    const promptValue = template({ steps });
+${
+  steps.length
+    ? `This is an ongoing mission. Here are some of the previous steps you've taken:${formatSteps()}\n\n`
+    : ""
+}Now that I have given you the context of the mission, and have given you the tools you'll need to complete the mission, you will say what needs to be done next by using the following format:
+
+Thought: you should always think transparently about what to do next before doing it
+Action: the action to take. Must be exactly one of [${tools
+      .map((tool) => tool.name)
+      .join(",")}]
+Action Input: the input to the action
+
+What is the next step?`;
 
     const data = await openAiApiClient
       .createChatCompletion({
@@ -480,7 +479,7 @@ What is the next step?`;
         messages: [
           {
             role: "user",
-            content: promptValue,
+            content: template,
           },
         ],
       })
@@ -509,20 +508,42 @@ What is the next step?`;
         }" is not a valid tool, try another one. As a reminder, your options are [${tools
           .map((tool) => tool.name)
           .join(",")}].`;
+    const fullStep = { ...output, observation };
+    steps.push(fullStep);
 
     await webhook({
       method: "RECORD_OBSERVATION",
       stepUuid: output.uuid,
       observation,
     });
-    steps.push({ ...output, observation });
     iterations++;
   }
-  const finish = finalOutput || "Agent stopped due to max iterations.";
+  const finish = finalOutput || "Stopped due to max iterations.";
+  const missionReport = `Mission: Close ${owner}/${repo}#${issue}
+Mission ID: ${missionUuid}
+Steps Taken:
+${formatSteps()}
+
+I then finished the mission after: ${finish}`;
   await webhook({
     method: "FINISH_MISSION",
-    finish,
+    missionReport,
     missionUuid,
+  });
+  const embeddingResponse = await openAiApiClient.createEmbedding({
+    input: [missionReport],
+    model: "text-embedding-ada-002",
+  });
+  const embedding = embeddingResponse.data.data[0].embedding;
+  await missionIndex.upsert({
+    upsertRequest: {
+      vectors: [
+        {
+          id: missionUuid,
+          values: embedding,
+        },
+      ],
+    },
   });
 };
 
