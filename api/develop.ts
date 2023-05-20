@@ -16,63 +16,41 @@ type AgentStep = {
   thought: string;
 };
 
-abstract class Tool {
-  verbose: boolean;
-  abstract name: string;
-  abstract description: string;
-  returnDirect = false;
+type Tool = {
+  name: string;
+  description: string;
+  call: (arg: string) => Promise<string>;
+};
 
-  protected abstract _call(arg: string): Promise<string>;
-  constructor(verbose = false) {
-    this.verbose = verbose;
-  }
-  async call(arg: string) {
-    return await this._call(arg);
-  }
-}
-
-class GithubCodeSearchTool extends Tool {
-  name = "Github Code Search";
-  description = `Code search looks through the files hosted on GitHub. You can also filter the results:
+const GithubCodeSearchTool = (octokit: Octokit): Tool => ({
+  name: "Github Code Search",
+  description: `Code search looks through the files hosted on GitHub. Here are some examples of the syntax:
 - install repo:charles/privaterepo	  Find all instances of install in code from the repository charles/privaterepo.
 - shogun user:heroku	  Find references to shogun from all public heroku repositories.
 - join extension:coffee 	Find all instances of join in code with coffee extension.
 - system size:>1000	  Find all instances of system in code of file size greater than 1000kbs.
 - examples path:/docs/	  Find all examples in the path /docs/.
-- replace fork:true	  Search replace in the source code of forks.`;
-  octokit: Octokit;
-  constructor({ auth }: { auth?: string }) {
-    super();
-    this.octokit = new Octokit({
-      auth,
-    });
-  }
-  async _call(input: string) {
-    return this.octokit.search
+- replace fork:true	  Search replace in the source code of forks.`,
+  call: (input: string) => {
+    return octokit.search
       .code({
         q: input,
       })
       .then((res) => {
-        return JSON.stringify(res.data);
+        const { items } = res.data;
+        return items.length ? JSON.stringify(items) : "No results found.";
       });
-  }
-}
+  },
+});
 
-class GithubIssueGetTool extends Tool {
-  name = "Github Issue Get";
-  description = `Get an issue from a GitHub repository. Please format your input as a JSON object with the following parameters:
+const GithubIssueGetTool = (octokit: Octokit): Tool => ({
+  name: "Github Issue Get",
+  description: `Get an issue from a GitHub repository. Please format your input as a JSON object with the following parameters:
 - owner: (string) [REQUIRED] The account owner of the repository. The name is not case sensitive.
 - repo: (string) [REQUIRED] The name of the repository. The name is not case sensitive.
-- issue_number: (number) [REQUIRED] The number that identifies the issue.`;
-  octokit: Octokit;
-  constructor({ auth }: { auth?: string }) {
-    super();
-    this.octokit = new Octokit({
-      auth,
-    });
-  }
-  async _call(input: string) {
-    return this.octokit.issues
+- issue_number: (number) [REQUIRED] The number that identifies the issue.`,
+  call: (input: string) => {
+    return octokit.issues
       .get(JSON.parse(input.trim().replace(/^```/, "").replace(/```$/, "")))
       .then((res) => {
         return res.data.body || "The issue is empty.";
@@ -80,27 +58,20 @@ class GithubIssueGetTool extends Tool {
       .catch((e) => {
         return JSON.stringify(e.response.data);
       });
-  }
-}
+  },
+});
 
-class GithubPullRequestCreateTool extends Tool {
-  name = "Github Pull Request Create";
-  description = `Create a pull request. Please format your input as a JSON object with the following parameters:
+const GithubPullRequestCreateTool = (octokit: Octokit): Tool => ({
+  name: "Github Pull Request Create",
+  description: `Create a pull request. Please format your input as a JSON object with the following parameters:
 - owner: (string) [REQUIRED] The account owner of the repository. The name is not case sensitive.
 - repo: (string) [REQUIRED] The name of the repository. The name is not case sensitive.
 - title: (string) [REQUIRED] The title of the new pull request. To close a GitHub issue with this pull request, include the keyword "Closes" followed by the issue number in the pull request's title.
 - head: (string) [REQUIRED] The name of the branch where your changes are implemented. Make sure you have changes committed on a separate branch before you create a pull request.
 - base: (string) [REQUIRED] The name of the branch you want the changes pulled into. This should be an existing branch on the current repository. You cannot submit a pull request to one repository that requests a merge to a base of another repository.
-- body: (string) [OPTIONAL] The contents of the pull request.`;
-  octokit: Octokit;
-  constructor({ auth }: { auth?: string }) {
-    super();
-    this.octokit = new Octokit({
-      auth,
-    });
-  }
-  async _call(input: string) {
-    return this.octokit.pulls
+- body: (string) [OPTIONAL] The contents of the pull request.`,
+  call: (input: string) => {
+    return octokit.pulls
       .create(JSON.parse(input.trim().replace(/^```/, "").replace(/```$/, "")))
       .then((res) => {
         return JSON.stringify(res.data, null, 2);
@@ -108,24 +79,17 @@ class GithubPullRequestCreateTool extends Tool {
       .catch((e) => {
         return JSON.stringify(e.response.data);
       });
-  }
-}
+  },
+});
 
-class GithubBranchGetTool extends Tool {
-  name = "Github Branch Get";
-  description = `Get a branch from a GitHub repository. Please format your input as a JSON object with the following parameters:
+const GithubBranchGetTool = (octokit: Octokit): Tool => ({
+  name: "Github Branch Get",
+  description: `Get a branch from a GitHub repository. Please format your input as a JSON object with the following parameters:
   - owner: (string) [REQUIRED] The account owner of the repository. The name is not case sensitive.
   - repo: (string) [REQUIRED] The name of the repository. The name is not case sensitive.
-  - branch: (string) [REQUIRED] The name of the branch. Cannot contain wildcard characters`;
-  octokit: Octokit;
-  constructor({ auth }: { auth?: string }) {
-    super();
-    this.octokit = new Octokit({
-      auth,
-    });
-  }
-  async _call(input: string) {
-    return this.octokit.repos
+  - branch: (string) [REQUIRED] The name of the branch. Cannot contain wildcard characters`,
+  call: (input: string) => {
+    return octokit.repos
       .getBranch(
         JSON.parse(input.trim().replace(/^```/, "").replace(/```$/, ""))
       )
@@ -135,16 +99,13 @@ class GithubBranchGetTool extends Tool {
       .catch((e) => {
         return JSON.stringify(e.response.data);
       });
-  }
-}
+  },
+});
 
-class GitCloneRepository extends Tool {
-  name = "Git Clone Repository";
-  description = `Clone a repository from GitHub into a new local directory. Please format your input as a url in the format https://github.com/[owner]/[repo].`;
-  constructor() {
-    super();
-  }
-  async _call(input: string) {
+const GitCloneRepository: Tool = {
+  name: "Git Clone Repository",
+  description: `Clone a repository from GitHub into a new local directory. Please format your input as a url in the format https://github.com/[owner]/[repo].`,
+  call: async (input: string) => {
     const dir = input
       .split("/")
       .slice(-1)[0]
@@ -169,27 +130,25 @@ class GitCloneRepository extends Tool {
       }
       return "Unknown error occurred.";
     }
-  }
-}
+  },
+};
 
-class ProcessChDir extends Tool {
-  name = "Change Current Directory";
-  description = `Switch your current working directory. Please format your input as the path to the directory relative your current working directory.`;
-  constructor() {
-    super();
-  }
-  async _call(input: string) {
+const ProcessChDir: Tool = {
+  name: "Change Current Directory",
+  description: `Switch your current working directory. Please format your input as the path to the directory relative your current working directory.`,
+  call: async (input: string) => {
+    if (!fs.existsSync(input)) return `Directory ${input} does not exist.`;
     process.chdir(input);
     return `Changed current directory into ${input}.`;
-  }
-}
+  },
+};
 
-class GitCheckoutNewBranch extends Tool {
-  name = "Git Checkout New Branch";
-  description = `Create a new branch in a local repository. Please format your input as a JSON object with the following parameters:
+const GitCheckoutNewBranch: Tool = {
+  name: "Git Checkout New Branch",
+  description: `Create a new branch in a local repository. Please format your input as a JSON object with the following parameters:
 - branch: (string) [REQUIRED] The name of the branch. Cannot contain wildcard characters
-- root: (string) [REQUIRED] The path to the root of the repository. Should always use /tmp/[repo]`;
-  async _call(input: string) {
+- root: (string) [REQUIRED] The path to the root of the repository. Should always use /tmp/[repo]`,
+  call: async (input: string) => {
     const { branch, root } = JSON.parse(
       input.trim().replace(/^```/, "").replace(/```$/, "")
     );
@@ -210,13 +169,13 @@ class GitCheckoutNewBranch extends Tool {
       }
       return "Unknown error occurred.";
     }
-  }
-}
+  },
+};
 
-class GitCheckoutBranch extends Tool {
-  name = "Git Checkout Branch";
-  description = `Switch to a branch in a local repository. This command does not switch your current working directory. Please format your input as a string representing just the branch name.`;
-  async _call(input: string) {
+const GitCheckoutBranch: Tool = {
+  name: "Git Checkout Branch",
+  description: `Switch to a branch in a local repository. This command does not switch your current working directory. Please format your input as a string representing just the branch name.`,
+  call: async (input: string) => {
     try {
       const result = execSync(`git checkout ${input}`);
       return result.toString();
@@ -228,13 +187,13 @@ class GitCheckoutBranch extends Tool {
       }
       return "Unknown error occurred.";
     }
-  }
-}
+  },
+};
 
-class GitAddFile extends Tool {
-  name = "Git Add File";
-  description = `Add file contents to be staged for a commit. Please format your input as a path to the file, relative to the current directory.`;
-  async _call(input: string) {
+const GitAddFile: Tool = {
+  name: "Git Add File",
+  description: `Add file contents to be staged for a commit. Please format your input as a path to the file, relative to the current directory.`,
+  call: async (input: string) => {
     try {
       execSync(`git add ${input}`);
       return `Successfully added ${input} to the staging area.`;
@@ -246,13 +205,13 @@ class GitAddFile extends Tool {
       }
       return "Unknown error occurred.";
     }
-  }
-}
+  },
+};
 
-class GitStatus extends Tool {
-  name = "Git Status";
-  description = `View all of the changes made to the repository since the last commit. The only acceptable input is "status".`;
-  async _call(input: string) {
+const GitStatus: Tool = {
+  name: "Git Status",
+  description: `View all of the changes made to the repository since the last commit. The only acceptable input is "status".`,
+  call: async (input: string) => {
     try {
       return execSync(`git status`).toString();
     } catch (e) {
@@ -263,32 +222,32 @@ class GitStatus extends Tool {
       }
       return "Unknown error occurred.";
     }
-  }
-}
+  },
+};
 
-class GitCommit extends Tool {
-  name = "Git Commit";
-  description = `Record all files added to the staging area as changes to the repository. Please format your input as a message summarizing the word done for the commit`;
-  async _call(input: string) {
+const GitCommit: Tool = {
+  name: "Git Commit",
+  description: `Record all files added to the staging area as changes to the repository. Please format your input as a message summarizing the word done for the commit`,
+  call: async (input: string) => {
     const out = execSync(`git commit -m "${input}"`).toString();
     if (out === "nothing to commit, working tree clean") return out;
     return `Successfully committed changes.`;
-  }
-}
+  },
+};
 
-class GitPushBranch extends Tool {
-  name = "Git Push Branch";
-  description = `Push your local branch to the remote repository. Please format your input as the name of the branch to push.`;
-  async _call(input: string) {
+const GitPushBranch: Tool = {
+  name: "Git Push Branch",
+  description: `Push your local branch to the remote repository. Please format your input as the name of the branch to push.`,
+  call: async (input: string) => {
     execSync(`git push origin "${input}"`, { stdio: "inherit" });
     return `Successfully pushed branch to remote repository.`;
-  }
-}
+  },
+};
 
-class GitListBranches extends Tool {
-  name = "Git List Branches";
-  description = `List the branches in your local repository. The only acceptable input is the word "list".`;
-  async _call(_input: string) {
+const GitListBranches: Tool = {
+  name: "Git List Branches",
+  description: `List the branches in your local repository. The only acceptable input is the word "list".`,
+  call: async (_input: string) => {
     const result = execSync(`git branch`).toString();
     const branches = result.split("\n").map((b) => b.trim());
     const currentIndex = branches.findIndex((b) => b.startsWith("*"));
@@ -297,34 +256,34 @@ class GitListBranches extends Tool {
     return `You're currently on branch ${current}. The following branches are available:\n${branches.join(
       "\n"
     )}`;
-  }
-}
+  },
+};
 
-class FsReadFile extends Tool {
-  name = "Fs Read File";
-  description = `Read a file from the filesystem. Please format your input as a path relative to your current directory.`;
-  async _call(input: string) {
+const FsReadFile: Tool = {
+  name: "Fs Read File",
+  description: `Read a file from the filesystem. Please format your input as a path relative to your current directory.`,
+  call: async (input: string) => {
     return fs.readFileSync(input.trim(), "utf8");
-  }
-}
+  },
+};
 
-class FsListFiles extends Tool {
-  name = "Fs List Files";
-  description = `List the files in a directory. Please format your input as a path relative to your current directory.`;
-  async _call(input: string) {
+const FsListFiles: Tool = {
+  name: "Fs List Files",
+  description: `List the files in a directory. Please format your input as a path relative to your current directory.`,
+  call: async (input: string) => {
     return `The files in the ${input} directory include: ${fs
       .readdirSync(input.trim(), "utf8")
       .join(", ")}`;
-  }
-}
+  },
+};
 
-class FsInsertText extends Tool {
-  name = "Fs Insert Text";
-  description = `Insert text to a file in the file system. Please format your input as a json object with the following parameters:
+const FsInsertText: Tool = {
+  name: "Fs Insert Text",
+  description: `Insert text to a file in the file system. Please format your input as a json object with the following parameters:
 - path: (string) [REQUIRED] The path to the file to insert text into, relative to your current directory.
 - text: (string) [REQUIRED] The text to insert into the file.
-- position: (number) [OPTIONAL] The position in the file to insert the text. If not provided, the text will be inserted at the end of the file.`;
-  async _call(input: string) {
+- position: (number) [OPTIONAL] The position in the file to insert the text. If not provided, the text will be inserted at the end of the file.`,
+  call: async (input: string) => {
     const {
       path,
       text,
@@ -336,16 +295,16 @@ class FsInsertText extends Tool {
     )}`;
     fs.writeFileSync(path, newContent);
     return `Successfully inserted text into ${path}.`;
-  }
-}
+  },
+};
 
-class FsRemoveText extends Tool {
-  name = "Fs Remove Text";
-  description = `Remove text from a file in the file system. Please format your input as a json object with the following parameters:
+const FsRemoveText: Tool = {
+  name: "Fs Remove Text",
+  description: `Remove text from a file in the file system. Please format your input as a json object with the following parameters:
 - path: (string) [REQUIRED] The path to the file to insert text into, relative to your current directory.
 - position: (number) [REQUIRED] The position in the file to insert the text. If not provided, the text will be inserted at the end of the file.
-- length: (number) [REQUIRED] The length of the text to remove from the file.`;
-  async _call(input: string) {
+- length: (number) [REQUIRED] The length of the text to remove from the file.`,
+  call: async (input: string) => {
     const { path, length, position } = JSON.parse(
       input.trim().replace(/^```/, "").replace(/```$/, "")
     );
@@ -355,8 +314,8 @@ class FsRemoveText extends Tool {
     )}`;
     fs.writeFileSync(path, newContent);
     return `Successfully inserted text into ${path}.`;
-  }
-}
+  },
+};
 
 const zArgs = z.object({
   issue: z.number(),
@@ -365,7 +324,7 @@ const zArgs = z.object({
   type: z.literal("User").or(z.literal("Organization")),
   missionUuid: z.string(),
   webhookUrl: z.string(),
-  maxSteps: z.number().default(3), // 15
+  maxSteps: z.number().default(5), // 15
 });
 
 const develop = async (evt: Parameters<Handler>[0]) => {
@@ -378,50 +337,47 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     missionUuid,
     maxSteps,
   } = zArgs.parse(evt);
-  console.log(
-    "I've been assigned to issue",
-    issue,
-    "from",
-    repo,
-    "within",
-    owner
-  );
   // TODO - need to refresh token if it's expired
   // const auth = await getInstallationToken(type, owner);
   const auth = process.env.GITHUB_TOKEN;
+  const previousWorkingDirectory = process.cwd();
+  const newWorkingDirectory = `/tmp/${missionUuid}`;
+  fs.mkdirSync(newWorkingDirectory);
+  process.chdir(newWorkingDirectory);
+  const octokit = new Octokit({ auth });
   const tools: Tool[] = [
-    new GithubCodeSearchTool({ auth }),
-    new GithubIssueGetTool({ auth }),
-    new GithubPullRequestCreateTool({ auth }),
-    new GithubBranchGetTool({ auth }),
-    new GitCloneRepository(),
-    new GitCheckoutNewBranch(),
-    new GitCheckoutBranch(),
-    new GitListBranches(),
-    new GitStatus(),
-    new FsReadFile(),
-    new FsInsertText(),
-    new FsRemoveText(),
-    new GitAddFile(),
-    new GitCommit(),
-    new GitPushBranch(),
-    new ProcessChDir(),
-    new FsListFiles(),
+    GithubCodeSearchTool(octokit),
+    GithubIssueGetTool(octokit),
+    GithubPullRequestCreateTool(octokit),
+    GithubBranchGetTool(octokit),
+    GitCloneRepository,
+    GitCheckoutNewBranch,
+    GitCheckoutBranch,
+    GitListBranches,
+    GitStatus,
+    FsReadFile,
+    FsInsertText,
+    FsRemoveText,
+    GitAddFile,
+    GitCommit,
+    GitPushBranch,
+    ProcessChDir,
+    FsListFiles,
   ];
 
   const toolsByName = Object.fromEntries(
     tools.map((t) => [t.name.toLowerCase(), t])
   );
   const steps: AgentStep[] = [];
-  const formatSteps = () =>
+  const formatSteps = (join = "\n") =>
     steps
       .map(
         (s, i) =>
           `${i + 1}. ${s.thought}. Executed \`${s.action}\` with input "${
             s.actionInput
-          }". ${s.observation}`
+          }". ${s.observation.trim()}`
       )
-      .join("\n");
+      .join(join);
   let iterations = 0;
   let finalOutput = "";
   const openAiApiClient = new OpenAIApi(
@@ -460,15 +416,13 @@ ${
   steps.length
     ? `This is an ongoing mission. Here are some of the previous steps you've taken:${formatSteps()}\n\n`
     : ""
-}Now that I have given you the context of the mission, and have given you the tools you'll need to complete the mission, you will say what needs to be done next by using the following format:
+}What is the next step? You will say what needs to be done next by using the following format exactly once for just the next step:
 
 Thought: you should always think transparently about what to do next before doing it
 Action: the action to take. Must be exactly one of [${tools
       .map((tool) => tool.name)
       .join(",")}]
-Action Input: the input to the action
-
-What is the next step?`;
+Action Input: the input to the action`;
 
     const data = await openAiApiClient
       .createChatCompletion({
@@ -503,9 +457,7 @@ What is the next step?`;
     const tool = toolsByName[output.action.toLowerCase()];
     const observation = tool
       ? await tool.call(output.actionInput).catch((e) => e.message)
-      : `"${
-          output.action
-        }" is not a valid tool, try another one. As a reminder, your options are [${tools
+      : `Your last selected Action is not a valid tool, try another one. As a reminder, your options are [${tools
           .map((tool) => tool.name)
           .join(",")}].`;
     const fullStep = { ...output, observation };
@@ -518,11 +470,12 @@ What is the next step?`;
     });
     iterations++;
   }
+  process.chdir(previousWorkingDirectory);
   const finish = finalOutput || "Stopped due to max iterations.";
   const missionReport = `Mission: Close ${owner}/${repo}#${issue}
 Mission ID: ${missionUuid}
 Steps Taken:
-${formatSteps()}
+${formatSteps("\n\n")}
 
 I then finished the mission after: ${finish}`;
   await webhook({
