@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Octokit } from "@octokit/rest";
 import { execSync, ChildProcess } from "child_process";
 import fs from "fs";
-import { OpenAIApi, Configuration } from "openai";
+import { OpenAIApi, Configuration, ChatCompletionRequestMessage } from "openai";
 import { v4 } from "uuid";
 import { PineconeClient } from "@pinecone-database/pinecone";
 // import getInstallationToken from "../src/utils/getInstallationToken";
@@ -45,7 +45,7 @@ const GithubCodeSearchTool = (octokit: Octokit): Tool => ({
 
 const GithubIssueGetTool = (octokit: Octokit): Tool => ({
   name: "Github Issue Get",
-  description: `Get an issue from a GitHub repository. Please format your input as a JSON object with the following parameters:
+  description: `Get an issue from a GitHub repository detailing what the issue is about. Please format your input as a JSON object with the following parameters:
 - owner: (string) [REQUIRED] The account owner of the repository. The name is not case sensitive.
 - repo: (string) [REQUIRED] The name of the repository. The name is not case sensitive.
 - issue_number: (number) [REQUIRED] The number that identifies the issue.`,
@@ -407,40 +407,65 @@ const develop = async (evt: Parameters<Handler>[0]) => {
       finalOutput = "Mission stopped due to an interruption signal.";
       break;
     }
-    const template = `You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue #${issue}. Your mission (id# ${missionUuid}) is to create a pull request that satisfies the requirements of the issue.
-  
-You have access to the following tools:
-${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")}
-
-${
-  steps.length
-    ? `This is an ongoing mission. Here are some of the previous steps you've taken:${formatSteps()}\n\n`
-    : ""
-}What is the next step? You will say what needs to be done next by using the following format exactly once for just the next step:
-
-Thought: you should always think transparently about what to do next before doing it
-Action: the action to take. Must be exactly one of [${tools
+    const instructions = `Thought: you should always think transparently about what to do next before doing it
+Action: the action to take. Any question you have is also considered an action. Must be exactly one of [${tools
       .map((tool) => tool.name)
       .join(",")}]
 Action Input: the input to the action`;
+    const messages: ChatCompletionRequestMessage[] = [
+      {
+        role: "system",
+        content: `You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue #${issue}. Your mission (id# ${missionUuid}) is to create a pull request that satisfies the requirements of the issue.
+  
+You have access to the following tools and ONLY the following tools:
+${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")}`,
+      },
+      {
+        role: "system",
+        content: `When the user asks, you must advise the next step using the following format:
 
-    const data = await openAiApiClient
+${instructions}
+`,
+      },
+      ...steps.flatMap((step): ChatCompletionRequestMessage[] => [
+        {
+          role: "assistant",
+          content: `Thought: ${step.thought}\nAction: ${step.action}\nAction Input: ${step.actionInput}`,
+        },
+        {
+          role: "system",
+          content: `Observation: ${step.observation}`,
+        },
+      ]),
+      {
+        role: "user",
+        content: "What is the next action you need to take?",
+      },
+    ];
+
+    const response = await openAiApiClient
       .createChatCompletion({
         stop: undefined,
         model: "gpt-3.5-turbo",
         temperature: 0,
         n: 1,
-        messages: [
-          {
-            role: "user",
-            content: template,
-          },
-        ],
+        messages,
       })
-      .then((res) => res.data)
-      .catch((e) => Promise.reject(JSON.stringify(e.response.data)));
+      .then((res) => ({ success: true as const, data: res.data }))
+      .catch((e) => {
+        return {
+          success: false as const,
+          error: e.response.data,
+        };
+      });
 
-    const generation = data.choices[0].message?.content ?? "";
+    if (!response.success) {
+      finalOutput = `Mission failed due to an error: ${JSON.stringify(
+        response.error
+      )}`;
+      break;
+    }
+    const generation = response.data.choices[0].message?.content ?? "";
     const output = {
       uuid: v4(),
       thought: /Thought: (.*)/.exec(generation)?.[1]?.trim() ?? "",
@@ -454,12 +479,16 @@ Action Input: the input to the action`;
       step: output,
     });
 
-    const tool = toolsByName[output.action.toLowerCase()];
-    const observation = tool
+    let tool;
+    const observation = !output.action
+      ? `We did not understand your last instruction. Please format your next step as follows:
+
+${instructions}`
+      : (tool = toolsByName[output.action.toLowerCase()])
       ? await tool.call(output.actionInput).catch((e) => e.message)
-      : `Your last selected Action is not a valid tool, try another one. As a reminder, your options are [${tools
-          .map((tool) => tool.name)
-          .join(",")}].`;
+      : `Your last selected Action is not a valid tool, try another one. As a reminder, your options are ${tools
+          .map((tool) => `"${tool.name}"`)
+          .join(", ")}.`;
     const fullStep = { ...output, observation };
     steps.push(fullStep);
 
