@@ -5,3 +5,4 @@ out
 node_modules
 scripts/debug.ts
 db.sqlite3
+__pycache__

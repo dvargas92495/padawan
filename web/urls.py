@@ -21,5 +21,6 @@ from . import views
 urlpatterns = [
     path("", views.index),
     path('missions/', include('web.missions.urls')),
+    path('tools/', include('web.tools.urls')),
     path('admin/', admin.site.urls),
 ]
