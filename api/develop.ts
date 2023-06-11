@@ -3,9 +3,10 @@ import { z } from "zod";
 import { Octokit } from "@octokit/rest";
 import { execSync, ChildProcess } from "child_process";
 import fs from "fs";
-import { OpenAIApi, Configuration, ChatCompletionRequestMessage } from "openai";
+import path from "path";
+import os from "os";
 import { v4 } from "uuid";
-import { PineconeClient } from "@pinecone-database/pinecone";
+import { VellumClient } from "vellum-ai";
 // import getInstallationToken from "../src/utils/getInstallationToken";
 // import appClient from "../src/utils/appClient";
 
@@ -380,17 +381,9 @@ const develop = async (evt: Parameters<Handler>[0]) => {
       .join(join);
   let iterations = 0;
   let finalOutput = "";
-  const openAiApiClient = new OpenAIApi(
-    new Configuration({
-      apiKey: process.env.OPENAI_API_KEY || "",
-    })
-  );
-  const pinecone = new PineconeClient();
-  await pinecone.init({
-    apiKey: process.env.PINECONE_API_KEY || "",
-    environment: process.env.PINECONE_ENVIRONMENT || "development",
+  const vellum = new VellumClient({
+    apiKey: process.env.VELLUM_API_KEY || "",
   });
-  const missionIndex = pinecone.Index("missions");
 
   const webhook = (data: Record<string, unknown>) =>
     fetch(webhookUrl, {
@@ -407,65 +400,29 @@ const develop = async (evt: Parameters<Handler>[0]) => {
       finalOutput = "Mission stopped due to an interruption signal.";
       break;
     }
-    const instructions = `Thought: you should always think transparently about what to do next before doing it
-Action: the action to take. Any question you have is also considered an action. Must be exactly one of [${tools
-      .map((tool) => tool.name)
-      .join(",")}]
-Action Input: the input to the action`;
-    const messages: ChatCompletionRequestMessage[] = [
-      {
-        role: "system",
-        content: `You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue #${issue}. Your mission (id# ${missionUuid}) is to create a pull request that satisfies the requirements of the issue.
-  
-You have access to the following tools and ONLY the following tools:
-${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")}`,
-      },
-      {
-        role: "system",
-        content: `When the user asks, you must advise the next step using the following format:
 
-${instructions}
-`,
-      },
-      ...steps.flatMap((step): ChatCompletionRequestMessage[] => [
+    const response = await vellum.generate({
+      deploymentName: "padawan-development",
+      requests: [
         {
-          role: "assistant",
-          content: `Thought: ${step.thought}\nAction: ${step.action}\nAction Input: ${step.actionInput}`,
+          inputValues: {
+            owner,
+            repo,
+            issue,
+            tools: tools
+              .map((tool) => `- ${tool.name}: ${tool.description}`)
+              .join("\n"),
+          },
         },
-        {
-          role: "system",
-          content: `Observation: ${step.observation}`,
-        },
-      ]),
-      {
-        role: "user",
-        content: "What is the next action you need to take?",
-      },
-    ];
+      ],
+    });
 
-    const response = await openAiApiClient
-      .createChatCompletion({
-        stop: undefined,
-        model: "gpt-3.5-turbo",
-        temperature: 0,
-        n: 1,
-        messages,
-      })
-      .then((res) => ({ success: true as const, data: res.data }))
-      .catch((e) => {
-        return {
-          success: false as const,
-          error: e.response.data,
-        };
-      });
-
-    if (!response.success) {
-      finalOutput = `Mission failed due to an error: ${JSON.stringify(
-        response.error
-      )}`;
+    const [result] = response.results;
+    if (result.error || !result.data) {
+      finalOutput = `Mission failed due to an error: ${result.error?.message}`;
       break;
     }
-    const generation = response.data.choices[0].message?.content ?? "";
+    const generation = result.data.completions[0].text;
     const output = {
       uuid: v4(),
       thought: /Thought: (.*)/.exec(generation)?.[1]?.trim() ?? "",
@@ -481,9 +438,7 @@ ${instructions}
 
     let tool;
     const observation = !output.action
-      ? `We did not understand your last instruction. Please format your next step as follows:
-
-${instructions}`
+      ? `We did not understand your last instruction`
       : (tool = toolsByName[output.action.toLowerCase()])
       ? await tool.call(output.actionInput).catch((e) => e.message)
       : `Your last selected Action is not a valid tool, try another one. As a reminder, your options are ${tools
@@ -512,20 +467,13 @@ I then finished the mission after: ${finish}`;
     missionReport,
     missionUuid,
   });
-  const embeddingResponse = await openAiApiClient.createEmbedding({
-    input: [missionReport],
-    model: "text-embedding-ada-002",
-  });
-  const embedding = embeddingResponse.data.data[0].embedding;
-  await missionIndex.upsert({
-    upsertRequest: {
-      vectors: [
-        {
-          id: missionUuid,
-          values: embedding,
-        },
-      ],
-    },
+  const fileName = path.join(os.tmpdir(), `${missionUuid}.txt`);
+  fs.writeFileSync(fileName, missionReport);
+  await vellum.documents.upload(fs.createReadStream(fileName), {
+    label: `Mission Report for ${owner}/${repo}#${issue}`,
+    addToIndexNames: ["padawan-missions"],
+    externalId: missionUuid,
+    keywords: [],
   });
 };
 
