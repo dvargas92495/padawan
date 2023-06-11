@@ -2,6 +2,7 @@
   "name": "padawan",
   "description": "A young apprentice, strong with the force, learning to master the ways of your repos.",
   "scripts": {
+    "django": "python manage.py runserver",
     "start:dev": "samepage start",
     "start": "ts-node scripts/start.ts"
   },
