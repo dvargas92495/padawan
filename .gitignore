@@ -2,6 +2,7 @@ dist
 build
 out
 .env
+.next
 node_modules
 scripts/debug.ts
 db.sqlite3
