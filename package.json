@@ -5,7 +5,9 @@
     "django": "python manage.py runserver",
     "dev": "next dev",
     "start:dev": "samepage start",
-    "start": "ts-node scripts/start.ts"
+    "start": "ts-node scripts/start.ts",
+    "premigrate": "npx drizzle-kit generate:pg",
+    "migrate": "ts-node scripts/migrate.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.11.1",
@@ -15,16 +17,23 @@
     "@octokit/rest": "^19.0.7",
     "@pinecone-database/pinecone": "^0.1.5",
     "@samepage/backend": "^0.64.0",
-    "@samepage/scripts": "^0.64.14",
+    "@samepage/scripts": "^0.72.1",
+    "date-fns": "^2.30.0",
+    "drizzle-orm": "^0.26.5",
     "express": "^4.18.2",
     "next": "^13.4.5",
     "openai": "^3.2.1",
+    "postgres": "^3.3.5",
     "vellum-ai": "^0.0.15"
   },
   "devDependencies": {
     "@octokit/webhooks-types": "^6.11.0",
     "@types/debug": "^4.1.7",
     "@types/express": "^4.17.17",
+    "@types/node": "^20.1.1",
+    "@types/react": "^18.2.6",
+    "@types/react-dom": "^18.2.4",
+    "drizzle-kit": "^0.18.1",
     "ts-node": "^10.9.1"
   },
   "version": "0.0.1"
