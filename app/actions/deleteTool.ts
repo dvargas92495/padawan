@@ -7,7 +7,6 @@ import { redirect } from "next/navigation";
 
 const deleteTool = async (args: FormData) => {
   const uuid = args.get("uuid") as string;
-  console.log(args, Object.fromEntries(args.entries()));
   if (!uuid) return;
   const cxn = drizzle();
   await cxn.delete(toolParameters).where(eq(toolParameters.toolUuid, uuid));

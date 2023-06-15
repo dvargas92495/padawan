@@ -1,0 +1,80 @@
+diff --git a/node_modules/drizzle-orm/db.d-a6fe1b19.d.ts b/node_modules/drizzle-orm/db.d-a6fe1b19.d.ts
+index 80143f0..b8608ae 100644
+--- a/node_modules/drizzle-orm/db.d-a6fe1b19.d.ts
++++ b/node_modules/drizzle-orm/db.d-a6fe1b19.d.ts
+@@ -880,6 +880,7 @@ declare class PgDatabase<TQueryResult extends QueryResultHKT, TFullSchema extend
+     delete<TTable extends AnyPgTable>(table: TTable): PgDelete<TTable, TQueryResult>;
+     refreshMaterializedView<TView extends PgMaterializedView>(view: TView): PgRefreshMaterializedView<TQueryResult>;
+     execute<TRow extends Record<string, unknown> = Record<string, unknown>>(query: SQLWrapper): Promise<QueryResultKind<TQueryResult, TRow>>;
++    end(): Promise<void>;
+     transaction<T>(transaction: (tx: PgTransaction<TQueryResult, TFullSchema, TSchema>) => Promise<T>, config?: PgTransactionConfig): Promise<T>;
+ }
+ 
+diff --git a/node_modules/drizzle-orm/postgres-js/index.cjs b/node_modules/drizzle-orm/postgres-js/index.cjs
+index 9a2808a..6e9ff18 100644
+--- a/node_modules/drizzle-orm/postgres-js/index.cjs
++++ b/node_modules/drizzle-orm/postgres-js/index.cjs
+@@ -91,6 +91,9 @@ class PostgresJsSession extends session.PgSession {
+             return transaction(tx);
+         });
+     }
++    end() {
++        return this.client.end();
++    }
+ }
+ class PostgresJsTransaction extends session.PgTransaction {
+     constructor(dialect, 
+diff --git a/node_modules/drizzle-orm/postgres-js/index.d.ts b/node_modules/drizzle-orm/postgres-js/index.d.ts
+index cac6159..9594b40 100644
+--- a/node_modules/drizzle-orm/postgres-js/index.d.ts
++++ b/node_modules/drizzle-orm/postgres-js/index.d.ts
+@@ -14,6 +14,7 @@ declare class PostgresJsPreparedQuery<T extends PreparedQueryConfig> extends Pre
+     private customResultMapper?;
+     constructor(client: Sql, query: string, params: unknown[], logger: Logger, fields: SelectedFieldsOrdered | undefined, customResultMapper?: ((rows: unknown[][]) => T['execute']) | undefined);
+     execute(placeholderValues?: Record<string, unknown> | undefined): Promise<T['execute']>;
++    end(): Promise<void>;
+     all(placeholderValues?: Record<string, unknown> | undefined): Promise<T['all']>;
+ }
+ interface PostgresJsSessionOptions {
+diff --git a/node_modules/drizzle-orm/postgres-js/index.mjs b/node_modules/drizzle-orm/postgres-js/index.mjs
+index 7ba1236..0280325 100644
+--- a/node_modules/drizzle-orm/postgres-js/index.mjs
++++ b/node_modules/drizzle-orm/postgres-js/index.mjs
+@@ -99,6 +99,9 @@ class PostgresJsSession extends PgSession {
+             return transaction(tx);
+         });
+     }
++    end() {
++        return this.client.end();
++    }
+ }
+ class PostgresJsTransaction extends PgTransaction {
+     session;
+diff --git a/node_modules/drizzle-orm/session-b2bd7eb4.cjs b/node_modules/drizzle-orm/session-b2bd7eb4.cjs
+index d6da695..e7194fa 100644
+--- a/node_modules/drizzle-orm/session-b2bd7eb4.cjs
++++ b/node_modules/drizzle-orm/session-b2bd7eb4.cjs
+@@ -316,6 +316,9 @@ class PgDatabase {
+     execute(query) {
+         return this.session.execute(query.getSQL());
+     }
++    end() {
++        return this.session.end();
++    }
+     transaction(transaction, config) {
+         return this.session.transaction(transaction, config);
+     }
+diff --git a/node_modules/drizzle-orm/session-deaaed1f.mjs b/node_modules/drizzle-orm/session-deaaed1f.mjs
+index fd53de9..703d113 100644
+--- a/node_modules/drizzle-orm/session-deaaed1f.mjs
++++ b/node_modules/drizzle-orm/session-deaaed1f.mjs
+@@ -351,6 +351,9 @@ class PgDatabase {
+     execute(query) {
+         return this.session.execute(query.getSQL());
+     }
++    end() {
++        return this.session.end();
++    }
+     transaction(transaction, config) {
+         return this.session.transaction(transaction, config);
+     }

@@ -24,7 +24,6 @@ type Column = {
   label: string;
   width?: number;
   align?: "right";
-  format?: (value: unknown) => string;
 };
 
 const columns: Column[] = [
@@ -35,7 +34,6 @@ const columns: Column[] = [
     label: "Parameters",
     width: 80,
     align: "right",
-    format: (value) => (Array.isArray(value) ? value.length : 0).toString(),
   },
   { id: "api", label: "API", width: 160 },
   { id: "method", label: "Method", width: 60 },
@@ -59,10 +57,10 @@ const ToolLayout = ({ children }: { children: React.ReactNode }) => {
     },
     [setPage, setRowsPerPage]
   );
+  const router = useRouter();
   React.useEffect(() => {
     getTools().then(setTools);
   }, [setTools]);
-  const router = useRouter();
   return (
     <Box display={"flex"} gap={"48px"}>
       <Box flexShrink={0}>
@@ -110,11 +108,7 @@ const ToolLayout = ({ children }: { children: React.ReactNode }) => {
                           const value = row[column.id];
                           return (
                             <TableCell key={column.id} align={column.align}>
-                              {column.format
-                                ? column.format(value)
-                                : typeof value === "string"
-                                ? value
-                                : "[unknown value]"}
+                              {value}
                             </TableCell>
                           );
                         })}

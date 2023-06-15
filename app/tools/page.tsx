@@ -78,7 +78,7 @@ export default function Page() {
       <Select defaultValue={METHODS[0]} label="Method" name={"method"}>
         {METHODS.map((method) => (
           <MenuItem value={method} key={method}>
-            method
+            {method}
           </MenuItem>
         ))}
       </Select>

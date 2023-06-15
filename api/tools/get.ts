@@ -13,12 +13,7 @@ const logic = async () => {
       description: sql<string>`min(${tools.description})`,
       api: sql<string>`min(${tools.api})`,
       method: sql<METHOD>`min(${tools.method})`,
-      parameters: sql<{
-        uuid: string;
-        name: string;
-        description: string;
-        type: PARAMETER_TYPE;
-      }>`json_agg(tool_parameters.*)`,
+      parameters: sql<number>`COUNT(${toolParameters.uuid})`,
     })
     .from(tools)
     .leftJoin(toolParameters, eq(tools.uuid, toolParameters.toolUuid))
