@@ -40,6 +40,9 @@ const columns: Column[] = [
 
 const ToolLayout = ({ children }: { children: React.ReactNode }) => {
   const [tools, setTools] = React.useState<Response["tools"]>([]);
+  React.useEffect(() => {
+    getTools().then(setTools);
+  }, [setTools]);
   const [page, setPage] = React.useState(0);
   const [rowsPerPage, setRowsPerPage] = React.useState(10);
   const handleChangePage = React.useCallback(
@@ -57,9 +60,6 @@ const ToolLayout = ({ children }: { children: React.ReactNode }) => {
     [setPage, setRowsPerPage]
   );
   const router = useRouter();
-  React.useEffect(() => {
-    getTools().then(setTools);
-  }, [setTools]);
   return (
     <Box display={"flex"} gap={"48px"}>
       <Box flexShrink={0}>
