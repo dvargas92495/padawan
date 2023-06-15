@@ -1,11 +1,7 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ESNext"
-    ],
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
     "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -20,15 +16,10 @@
     "jsx": "preserve",
     "baseUrl": ".",
     "paths": {
-      "app/*": [
-        "./app/*"
-      ],
-      "api/*": [
-        "./api/*"
-      ],
-      "src/*": [
-        "./src/*"
-      ]
+      "app/*": ["./app/*"],
+      "api/*": ["./api/*"],
+      "scripts/*": ["./scripts/*"],
+      "src/*": ["./src/*"]
     },
     "incremental": true,
     "plugins": [
@@ -37,20 +28,12 @@
       }
     ]
   },
-  "include": [
-    "api",
-    "src",
-    "tests",
-    "scripts",
-    ".next/types/**/*.ts"
-  ],
+  "include": ["app", "api", "src", "tests", "scripts", ".next/types/**/*.ts"],
   "ts-node": {
     "compilerOptions": {
       "esModuleInterop": true,
       "module": "commonjs"
     }
   },
-  "exclude": [
-    "node_modules"
-  ]
+  "exclude": ["node_modules"]
 }

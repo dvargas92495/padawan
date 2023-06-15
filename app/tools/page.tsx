@@ -3,8 +3,6 @@ import React from "react";
 import Box from "@mui/material/Box";
 import TextField from "@mui/material/TextField";
 import Button from "@mui/material/Button";
-import FormControl from "@mui/material/FormControl";
-import InputLabel from "@mui/material/InputLabel";
 import Select from "@mui/material/Select";
 import MenuItem from "@mui/material/MenuItem";
 import FormGroup from "@mui/material/FormGroup";
@@ -14,6 +12,7 @@ import AddIcon from "@mui/icons-material/Add";
 import IconButton from "@mui/material/IconButton";
 import { v4 } from "uuid";
 import createTool from "../actions/createTool";
+import { METHODS, PARAMETER_TYPES } from "scripts/schema";
 
 const MultiField = ({
   label,
@@ -76,11 +75,12 @@ export default function Page() {
         rows={4}
       />
       <TextField label={"API"} name={"api"} />
-      <Select defaultValue={"GET"} label="Method" name={"method"}>
-        <MenuItem value={"GET"}>GET</MenuItem>
-        <MenuItem value={"POST"}>POST</MenuItem>
-        <MenuItem value={"PUT"}>PUT</MenuItem>
-        <MenuItem value={"DELETE"}>DELETE</MenuItem>
+      <Select defaultValue={METHODS[0]} label="Method" name={"method"}>
+        {METHODS.map((method) => (
+          <MenuItem value={method} key={method}>
+            method
+          </MenuItem>
+        ))}
       </Select>
       <MultiField
         label={"Parameters"}
@@ -94,13 +94,15 @@ export default function Page() {
               sx={{ flexGrow: 1 }}
             />
             <Select
-              defaultValue={"string"}
+              defaultValue={PARAMETER_TYPES[0]}
               label="Type"
               name={`parameters.type`}
             >
-              <MenuItem value={"string"}>string</MenuItem>
-              <MenuItem value={"boolean"}>boolean</MenuItem>
-              <MenuItem value={"number"}>number</MenuItem>
+              {PARAMETER_TYPES.map((pt) => (
+                <MenuItem value={pt} key={pt}>
+                  pt
+                </MenuItem>
+              ))}
             </Select>
             <IconButton sx={{ marginLeft: 4 }} onClick={onRemove}>
               <DeleteIcon />

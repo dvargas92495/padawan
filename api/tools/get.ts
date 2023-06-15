@@ -1,35 +1,31 @@
 import createAPIGatewayHandler from "@samepage/backend/createAPIGatewayProxyHandler";
 import { v4 } from "uuid";
+import { METHOD, PARAMETER_TYPE, tools, toolParameters } from "scripts/schema";
+import drizzle from "src/utils/drizzle";
+import { eq, sql } from "drizzle-orm";
 
 const logic = async () => {
+  const cxn = drizzle();
+  const records = await cxn
+    .select({
+      uuid: tools.uuid,
+      name: sql<string>`min(${tools.name})`,
+      description: sql<string>`min(${tools.description})`,
+      api: sql<string>`min(${tools.api})`,
+      method: sql<METHOD>`min(${tools.method})`,
+      parameters: sql<{
+        uuid: string;
+        name: string;
+        description: string;
+        type: PARAMETER_TYPE;
+      }>`json_agg(tool_parameters.*)`,
+    })
+    .from(tools)
+    .leftJoin(toolParameters, eq(tools.uuid, toolParameters.toolUuid))
+    .groupBy(tools.uuid);
+  await cxn.end();
   return {
-    tools: [
-      {
-        uuid: v4(),
-        name: "github_issue_get",
-        description:
-          "Get an issue from a GitHub repository detailing what the issue is about.",
-        parameters: [
-          {
-            name: "owner",
-            type: "string",
-            description: "The owner of the repository.",
-          },
-          {
-            name: "repo",
-            type: "string",
-            description: "The name of the repository.",
-          },
-          {
-            name: "issue_number",
-            type: "number",
-            description: "The number of the issue.",
-          },
-        ],
-        api: "https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}",
-        method: "GET",
-      },
-    ],
+    tools: records,
   };
 };
 

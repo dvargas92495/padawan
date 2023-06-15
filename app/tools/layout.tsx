@@ -10,6 +10,8 @@ import TableRow from "@mui/material/TableRow";
 import TableCell from "@mui/material/TableCell";
 import TableBody from "@mui/material/TableBody";
 import TablePagination from "@mui/material/TablePagination";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 async function getTools() {
   const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/tools`);
@@ -60,6 +62,7 @@ const ToolLayout = ({ children }: { children: React.ReactNode }) => {
   React.useEffect(() => {
     getTools().then(setTools);
   }, [setTools]);
+  const router = useRouter();
   return (
     <Box display={"flex"} gap={"48px"}>
       <Box flexShrink={0}>
@@ -101,6 +104,7 @@ const ToolLayout = ({ children }: { children: React.ReactNode }) => {
                         sx={{
                           cursor: "pointer",
                         }}
+                        onClick={() => router.push(`/tools/${row.uuid}`)}
                       >
                         {columns.map((column) => {
                           const value = row[column.id];
