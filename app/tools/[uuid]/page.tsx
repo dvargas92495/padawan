@@ -20,9 +20,10 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
   }, [setTool, params.uuid]);
   return (
     <Box>
-      <h2>{params.uuid}</h2>
       {tool && (
         <Box>
+          <h2>{tool.name}</h2>
+          <p>{tool.description}</p>
           <h2>Parameters</h2>
           <List>
             {tool.parameters.map((parameter) => (
@@ -46,12 +47,19 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
           </List>
         </Box>
       )}
-      <form action={deleteTool}>
-        <input type="hidden" name="uuid" value={params.uuid} />
-        <Button variant="contained" color="warning" type="submit">
-          Delete
-        </Button>
-      </form>
+      <Box
+        display={"flex"}
+        justifyContent={"space-between"}
+        alignItems={"center"}
+      >
+        <form action={deleteTool}>
+          <input type="hidden" name="uuid" value={params.uuid} />
+          <Button variant="contained" color="warning" type="submit">
+            Delete
+          </Button>
+        </form>
+        <Button href="/tools">Back</Button>
+      </Box>
     </Box>
   );
 };

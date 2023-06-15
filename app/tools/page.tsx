@@ -100,7 +100,7 @@ export default function Page() {
             >
               {PARAMETER_TYPES.map((pt) => (
                 <MenuItem value={pt} key={pt}>
-                  pt
+                  {pt}
                 </MenuItem>
               ))}
             </Select>
