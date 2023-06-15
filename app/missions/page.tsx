@@ -4,6 +4,7 @@ import Box from "@mui/material/Box";
 import TextField from "@mui/material/TextField";
 import Button from "@mui/material/Button";
 import { v4 } from "uuid";
+import startTool from "app/actions/startMission";
 
 export default function Page() {
   return (
@@ -14,6 +15,7 @@ export default function Page() {
       gap={"16px"}
       alignItems={"start"}
       maxWidth={512}
+      action={startTool}
     >
       <h2>New Mission</h2>
       <TextField

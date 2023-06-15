@@ -32,16 +32,16 @@ export const missions = pgTable("missions", {
   startDate: timestamp("start_date"),
 });
 
-// export const missionEvents = mysqlTable("mission_events", {
-//   uuid: primaryUuid(),
-//   missionUuid: uuid("mission_uuid").notNull(),
-//   status: varchar("status", { length: 64 }).notNull().default(""),
-//   createdDate: date("created"),
-// });
+export const missionEvents = pgTable("mission_events", {
+  uuid: uuid("uuid"),
+  missionUuid: uuid("mission_uuid"),
+  status: text("status"),
+  createdDate: timestamp("created_date"),
+});
 
-// export const missionSteps = mysqlTable("mission_steps", {
-//   uuid: primaryUuid(),
-//   missionUuid: uuid("mission_uuid").notNull(),
-//   stepHash: varchar("step_hash", { length: 128 }).notNull().default(""),
-//   executionDate: date("execution"),
-// });
+export const missionSteps = pgTable("mission_steps", {
+  uuid: uuid("uuid"),
+  missionUuid: uuid("mission_uuid"),
+  stepHash: text("step_hash"),
+  executionDate: timestamp("execution_date"),
+});

@@ -1,34 +1,36 @@
 "use server";
 
 import { eq, sql } from "drizzle-orm";
-import { METHOD, PARAMETER_TYPE, toolParameters, tools } from "scripts/schema";
+import { missionEvents, missions, missionSteps } from "scripts/schema";
 import drizzle from "src/utils/drizzle";
 
 const getMission = async (args: { uuid: string }) => {
   const cxn = drizzle();
   const [mission] = await cxn
     .select({
-      uuid: tools.uuid,
-      label: sql<string>`min(${tools.name})`,
-      createdDate: sql<string>`min(${tools.description})`,
-      status: sql<string>`min(${tools.api})`,
-      report: sql<METHOD>`min(${tools.method})`,
+      uuid: missions.uuid,
+      label: sql<string>`min(${missions.label})`,
+      startDate: sql<string>`min(${missions.startDate})`,
+      status: sql<string>`max(${missionEvents.status})`,
+      report: sql<string>`min(${missionEvents.status})`,
       steps: sql<
         {
-          thought: string;
-          action: string;
-          actionInput: string;
-          generation: string;
-          uuid: string;
-          observation: string;
-          date: number;
+          hash: string;
         }[]
-      >`json_agg(tool_parameters.*)`,
+      >`coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'hash',${missionSteps.stepHash}
+          )
+        ) FILTER (WHERE ${missionSteps.uuid} IS NOT NULL), 
+        '[]'::jsonb
+      )`,
     })
-    .from(tools)
-    .leftJoin(toolParameters, eq(tools.uuid, toolParameters.toolUuid))
-    .where(eq(tools.uuid, args.uuid))
-    .groupBy(tools.uuid);
+    .from(missions)
+    .leftJoin(missionSteps, eq(missions.uuid, missionSteps.missionUuid))
+    .leftJoin(missionEvents, eq(missions.uuid, missionEvents.missionUuid))
+    .where(eq(missions.uuid, args.uuid))
+    .groupBy(missions.uuid);
   await cxn.end();
   return mission;
 };

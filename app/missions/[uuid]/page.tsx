@@ -10,23 +10,13 @@ import Typography from "@mui/material/Typography";
 
 const REFRESH_INTERVAL = 1000 * 15;
 
-const stepSchema = z
-  .object({
-    thought: z.string(),
-    action: z.string(),
-    actionInput: z.string(),
-    generation: z.string(),
-    observation: z.string(),
-    uuid: z.string(),
-    date: z.number(),
-  })
-  .or(z.literal(false));
+type Mission = Awaited<ReturnType<typeof getMission>>;
 
 const PadawanMissionStep = ({
   step,
   index,
 }: {
-  step: z.infer<typeof stepSchema>;
+  step: Mission["steps"][number];
   index: number;
 }) => {
   const [showGeneration, setShowGeneration] = React.useState(false);
@@ -35,14 +25,14 @@ const PadawanMissionStep = ({
   ) : (
     <Paper elevation={3}>
       <h1 className="font-semibold text-lg mb-4">Step {index + 1}</h1>
-      <Typography variant="subtitle1">{step.thought}</Typography>
+      {/* <Typography variant="subtitle1">{step.thought}</Typography>
       <Typography variant="subtitle1">
         <b>{step.action}:</b> <code>{step.actionInput}</code>
       </Typography>
       <Typography variant="subtitle1">
         Executed on {new Date(step.date).toLocaleString()}. Observation:
       </Typography>
-      <Typography variant="subtitle1">{step.observation}</Typography>
+      <Typography variant="subtitle1">{step.observation}</Typography> */}
       {showGeneration ? (
         <pre className="mt-4 rounded-2xl border shadow-lg bg-slate-300 relative p-4 overflow-hidden whitespace-break-spaces">
           <span
@@ -51,7 +41,7 @@ const PadawanMissionStep = ({
           >
             x
           </span>
-          <code>{step.generation}</code>
+          {/* <code>{step.generation}</code> */}
         </pre>
       ) : (
         <Typography
@@ -99,6 +89,7 @@ const MissionPage = ({ params }: { params: { uuid: string } }) => {
     }
     return () => {};
   }, [mission?.status, refresh]);
+  console.log(mission);
   return (
     <Box>
       {mission && (

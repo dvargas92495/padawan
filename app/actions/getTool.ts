@@ -13,12 +13,24 @@ const getTool = async (args: { uuid: string }) => {
       description: sql<string>`min(${tools.description})`,
       api: sql<string>`min(${tools.api})`,
       method: sql<METHOD>`min(${tools.method})`,
-      parameters: sql<{
-        uuid: string;
-        name: string;
-        description: string;
-        type: PARAMETER_TYPE;
-      }[]>`json_agg(tool_parameters.*)`,
+      parameters: sql<
+        {
+          uuid: string;
+          name: string;
+          description: string;
+          type: PARAMETER_TYPE;
+        }[]
+      >`coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'uuid',${toolParameters.uuid},
+            'name',${toolParameters.name},
+            'description',${toolParameters.description},
+            'type',${toolParameters.type}
+          )
+        ) FILTER (WHERE ${toolParameters.uuid} IS NOT NULL), 
+        '[]'::jsonb
+      )`,
     })
     .from(tools)
     .leftJoin(toolParameters, eq(tools.uuid, toolParameters.toolUuid))

@@ -15,6 +15,7 @@ import {
   PARAMETER_TYPE,
   toolParameters,
 } from "scripts/schema";
+import getMissionPath from "src/utils/getMissionPath";
 // import getInstallationToken from "../src/utils/getInstallationToken";
 // import appClient from "../src/utils/appClient";
 
@@ -98,7 +99,6 @@ const zArgs = z.object({
   repo: z.string(),
   type: z.literal("User").or(z.literal("Organization")),
   missionUuid: z.string(),
-  webhookUrl: z.string(),
   maxSteps: z.number().default(5), // 15
 });
 
@@ -108,17 +108,14 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     repo,
     owner,
     type: _type,
-    webhookUrl,
     missionUuid,
     maxSteps,
   } = zArgs.parse(evt);
   // TODO - need to refresh token if it's expired
   // const auth = await getInstallationToken(type, owner);
   // const auth = process.env.GITHUB_TOKEN;
-  const previousWorkingDirectory = process.cwd();
-  const newWorkingDirectory = `/tmp/${missionUuid}`;
-  fs.mkdirSync(newWorkingDirectory);
-  process.chdir(newWorkingDirectory);
+  fs.mkdirSync(getMissionPath(missionUuid), { recursive: true });
+  return;
   // const octokit = new Octokit({ auth });
   const cxn = drizzle();
   const tools = await cxn
@@ -160,8 +157,9 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     apiKey: process.env.VELLUM_API_KEY || "",
   });
 
+  // TODO - need to replace
   const webhook = (data: Record<string, unknown>) =>
-    fetch(webhookUrl, {
+    fetch("", {
       method: "POST",
       body: JSON.stringify(data),
     }).then((r) => r.json());

@@ -13,7 +13,7 @@ import type { Response } from "../../api/missions/get";
 import { useRouter } from "next/navigation";
 
 type Column = {
-  id: "label" | "createdDate";
+  id: "label" | "startDate" | "steps";
   label: string;
   width?: number;
   align?: "right";
@@ -21,7 +21,8 @@ type Column = {
 
 const columns: Column[] = [
   { id: "label", label: "Label", width: 200 },
-  { id: "createdDate", label: "Created Date", width: 200 },
+  { id: "startDate", label: "Start Date", width: 200 },
+  { id: "steps", label: "Steps", width: 60 },
 ];
 
 async function getMissions() {
