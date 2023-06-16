@@ -1,7 +1,7 @@
 "use client";
 import React from "react";
 import Box from "@mui/material/Box";
-import type { Response } from "../../api/tools/get";
+import getTools, { GetToolsResponse } from "app/actions/getTools";
 import Paper from "@mui/material/Paper";
 import TableContainer from "@mui/material/TableContainer";
 import Table from "@mui/material/Table";
@@ -11,12 +11,6 @@ import TableCell from "@mui/material/TableCell";
 import TableBody from "@mui/material/TableBody";
 import TablePagination from "@mui/material/TablePagination";
 import { useRouter } from "next/navigation";
-
-async function getTools() {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/tools`);
-  const json = (await res.json()) as Response;
-  return json.tools;
-}
 
 type Column = {
   id: "name" | "description" | "parameters" | "api" | "method";
@@ -39,9 +33,9 @@ const columns: Column[] = [
 ];
 
 const ToolLayout = ({ children }: { children: React.ReactNode }) => {
-  const [tools, setTools] = React.useState<Response["tools"]>([]);
+  const [tools, setTools] = React.useState<GetToolsResponse["tools"]>([]);
   React.useEffect(() => {
-    getTools().then(setTools);
+    getTools().then((r) => setTools(r.tools));
   }, [setTools]);
   const [page, setPage] = React.useState(0);
   const [rowsPerPage, setRowsPerPage] = React.useState(10);

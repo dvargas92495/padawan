@@ -315,6 +315,9 @@ const api = async () => {
         "@google-cloud/functions-framework",
         "google-gax",
       ],
+      loader: {
+        ".node": "file",
+      },
       define: getDotEnvObject(),
       entryPoints: Object.fromEntries(
         entries.map((file) => [

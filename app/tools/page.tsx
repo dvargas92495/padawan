@@ -87,10 +87,7 @@ export default function Page() {
         name={"parameters"}
         FieldSet={({ onRemove }) => (
           <FormGroup row sx={{ gap: 2 }}>
-            <TextField
-              name={`parameters.name`}
-              label={"Name"}
-            />
+            <TextField name={`parameters.name`} label={"Name"} />
             <Select
               defaultValue={PARAMETER_TYPES[0]}
               label="Type"
@@ -112,6 +109,15 @@ export default function Page() {
             </IconButton>
           </FormGroup>
         )}
+      />
+      <TextField
+        label={"Format"}
+        name={"format"}
+        multiline
+        rows={2}
+        helperText={
+          "The formatting text used to format the response data from this tool before feeding to the model. By default, the response data is fed to the model as a JSON string."
+        }
       />
       <Button type={"submit"} variant="contained">
         Create

@@ -1,10 +1,9 @@
-import createAPIGatewayHandler from "@samepage/backend/createAPIGatewayProxyHandler";
-import { v4 } from "uuid";
-import { METHOD, PARAMETER_TYPE, tools, toolParameters } from "scripts/schema";
+"use server";
+import { METHOD, tools, toolParameters } from "scripts/schema";
 import drizzle from "src/utils/drizzle";
 import { eq, sql } from "drizzle-orm";
 
-const logic = async () => {
+const getTools = async () => {
   const cxn = drizzle();
   const records = await cxn
     .select({
@@ -24,6 +23,6 @@ const logic = async () => {
   };
 };
 
-export type Response = Awaited<ReturnType<typeof logic>>;
+export type GetToolsResponse = Awaited<ReturnType<typeof getTools>>;
 
-export default createAPIGatewayHandler(logic);
+export default getTools;

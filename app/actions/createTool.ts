@@ -17,6 +17,7 @@ const createTool = async (args: FormData) => {
   const name = typeof nameArg === "string" ? nameArg : "";
   const descriptionArg = args.get("description");
   const apiArg = args.get("api");
+  const formatArg = args.get("format");
   const methodArg = args.get("method");
   const cxn = drizzle();
   await cxn.insert(tools).values({
@@ -24,6 +25,7 @@ const createTool = async (args: FormData) => {
     name,
     description: typeof descriptionArg === "string" ? descriptionArg : "",
     api: typeof apiArg === "string" ? apiArg : "",
+    format: typeof formatArg === "string" ? formatArg : "",
     method: METHODS.includes(methodArg as METHOD)
       ? (methodArg as METHOD)
       : "GET",

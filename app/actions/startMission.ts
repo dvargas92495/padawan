@@ -12,7 +12,8 @@ const zData = z.object({
   issue: z.string().transform((v) => Number(v)),
 });
 
-const startTool = async (data: FormData) => {
+const startMission = async (data: FormData) => {
+  console.log("start mission", new Date().valueOf());
   const { owner, repo, issue, label } = zData.parse(
     Object.fromEntries(data.entries())
   );
@@ -39,4 +40,4 @@ const startTool = async (data: FormData) => {
   redirect(`/missions/${missionUuid}`);
 };
 
-export default startTool;
+export default startMission;

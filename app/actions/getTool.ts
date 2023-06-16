@@ -13,6 +13,7 @@ const getTool = async (args: { uuid: string }) => {
       description: sql<string>`min(${tools.description})`,
       api: sql<string>`min(${tools.api})`,
       method: sql<METHOD>`min(${tools.method})`,
+      format: sql<METHOD>`min(${tools.format})`,
       parameters: sql<
         {
           uuid: string;

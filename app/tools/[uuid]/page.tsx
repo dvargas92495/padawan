@@ -24,17 +24,32 @@ import Select from "@mui/material/Select";
 import { PARAMETER_TYPES } from "scripts/schema";
 import MenuItem from "@mui/material/MenuItem";
 import updateToolParameter from "app/actions/updateToolParameter";
+import updateToolFormat from "app/actions/updateToolFormat";
+import type { Variant } from "@mui/material/styles/createTypography";
+import updateToolApi from "app/actions/updateToolApi";
 
-const EditableName = ({ name, uuid }: { name: string; uuid: string }) => {
+const EditableField = ({
+  label,
+  defaultValue,
+  uuid,
+  updateAction,
+  variant,
+}: {
+  label: string;
+  updateAction: (req: FormData) => Promise<void>;
+  defaultValue: string;
+  uuid: string;
+  variant: Variant;
+}) => {
   const [isEdit, setIsEditing] = React.useState(false);
   return isEdit ? (
-    <form action={updateToolName}>
+    <form action={updateAction}>
       <input type="hidden" name="uuid" value={uuid} />
       <TextField
-        name={"name"}
-        label={"Name"}
+        name={label.toLowerCase()}
+        label={label}
         fullWidth
-        defaultValue={name}
+        defaultValue={defaultValue}
         InputProps={{
           endAdornment: (
             <Box display={"flex"} gap={1} alignItems={"center"}>
@@ -47,17 +62,15 @@ const EditableName = ({ name, uuid }: { name: string; uuid: string }) => {
             </Box>
           ),
         }}
-      >
-        {name}
-      </TextField>
+      />
     </form>
   ) : (
     <Typography
-      variant="h2"
+      variant={variant}
       sx={{ cursor: "pointer", "&:hover": { bgcolor: "#eeeeee" } }}
       onClick={() => setIsEditing(true)}
     >
-      {name}
+      {defaultValue || "Click to edit"}
     </Typography>
   );
 };
@@ -85,8 +98,21 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
     <Box>
       {tool && (
         <Box>
-          <EditableName name={tool.name} uuid={tool.uuid} />
-          <p>{tool.description}</p>
+          <EditableField
+            defaultValue={tool.name}
+            uuid={tool.uuid}
+            updateAction={updateToolName}
+            label={"Name"}
+            variant="h2"
+          />
+          <Typography variant="body1">{tool.description}</Typography>
+          <EditableField
+            defaultValue={tool.api}
+            uuid={tool.uuid}
+            updateAction={updateToolApi}
+            label={"API"}
+            variant="body2"
+          />
           <h2>Parameters</h2>
           <List>
             {tool.parameters.map((parameter) => (
@@ -111,6 +137,13 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
               </ListItemButton>
             ))}
           </List>
+          <EditableField
+            defaultValue={tool.format}
+            uuid={tool.uuid}
+            updateAction={updateToolFormat}
+            label={"Format"}
+            variant={"body1"}
+          />
           <Dialog
             open={!!editingParameterUuid}
             onClose={closeEditParameterDialog}
@@ -161,6 +194,7 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
         display={"flex"}
         justifyContent={"space-between"}
         alignItems={"center"}
+        marginTop={4}
       >
         <form action={deleteTool}>
           <input type="hidden" name="uuid" value={params.uuid} />

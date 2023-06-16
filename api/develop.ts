@@ -17,17 +17,10 @@ import {
 } from "scripts/schema";
 import getMissionPath from "src/utils/getMissionPath";
 import crypto from "crypto";
-import {
-  OpenAIApi,
-  Configuration,
-  ChatCompletionRequestMessageFunctionCall,
-} from "openai";
-import {
-  ChatMessageRole,
-  GenerateResponse,
-  GenerateResult,
-} from "vellum-ai/api";
+import { OpenAIApi, Configuration } from "openai";
+import { ChatMessageRole, GenerateResponse } from "vellum-ai/api";
 import vellum from "src/utils/vellumClient";
+import nunjucks from "nunjucks";
 
 // const GitStatus: Tool = {
 //   name: "Git Status",
@@ -100,34 +93,51 @@ const zArgs = z.object({
   useNative: z.boolean().default(false),
 });
 
-const invokeTool = ({
+const invokeTool = async ({
   missionUuid,
   api,
   method,
   body,
+  format,
 }: {
   missionUuid: string;
   api: string;
   method: METHOD;
   body: Record<string, string | number | boolean>;
+  format?: string;
 }) => {
-  const url = new URL(api);
+  const url = new URL(nunjucks.renderString(api, body));
   const headers: HeadersInit = {
     "x-padawan-mission": missionUuid,
     // Authorization
+  };
+  const responseHandler = async (r: Response): Promise<string> => {
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(
+        `${method} request to ${api} failed (${r.status}): ${text}`
+      );
+    }
+    if (r.headers.get("Content-Type")?.startsWith("application/json")) {
+      const data = await r.json();
+      return format
+        ? nunjucks.renderString(format, data)
+        : JSON.stringify(data);
+    }
+    return r.text();
   };
   if (method === "GET" || method === "DELETE") {
     Object.entries(body).forEach(([key, value]) => {
       url.searchParams.append(key, value.toString());
     });
-    return fetch(url.toString(), { method, headers });
+    return fetch(url.toString(), { method, headers }).then(responseHandler);
   }
   headers["Content-Type"] = "application/json";
   return fetch(url.toString(), {
     method,
     body: JSON.stringify(body),
     headers,
-  });
+  }).then(responseHandler);
 };
 
 const zGeneration = z.object({
@@ -164,6 +174,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
       description: sql<string>`min(${toolsTable.description})`,
       api: sql<string>`min(${toolsTable.api})`,
       method: sql<METHOD>`min(${toolsTable.method})`,
+      format: sql<METHOD>`min(${toolsTable.format})`,
       parameters: sql<
         {
           uuid: string;
@@ -207,7 +218,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
   const apisByName = Object.fromEntries(
     tools.map((t) => [
       t.name.toLowerCase().replace(/\s/g, "_"),
-      { api: t.api, method: t.method },
+      { api: t.api, method: t.method, format: t.format },
     ])
   );
   const functionsByName = Object.fromEntries(functions.map((f) => [f.name, f]));
@@ -231,7 +242,6 @@ const develop = async (evt: Parameters<Handler>[0]) => {
           functionArgs: missionSteps.functionArgs,
         })
         .from(missionSteps)
-        .where(eq(missionEvents.missionUuid, missionUuid))
         .orderBy(desc(missionSteps.executionDate));
       const chatHistory = previousMissionSteps.flatMap((step) => [
         {
@@ -374,9 +384,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
             missionUuid,
             body: functionArgs,
             ...apisByName[functionName],
-          })
-            .then((r) => r.text())
-            .catch((e) => e.message);
+          }).catch((e) => e.message);
 
       await cxn
         .update(missionSteps)
@@ -422,17 +430,16 @@ ${allEvents.map((evt) => `- [${evt.status}] - ${evt.details}`).join("\n")}`;
 
   const fileName = path.join(root, `report.txt`);
   fs.writeFileSync(fileName, missionReport);
-  // const { documentId } = 
-  await vellum.documents.upload(
-    fs.createReadStream(fileName),
-    {
-      label: `Mission Report for ${owner}/${repo}#${issue}`,
+  // const { documentId } =
+  await vellum.documents
+    .upload(fs.createReadStream(fileName), {
+      label: missionLabel,
       addToIndexNames: ["padawan-missions"],
       externalId: missionUuid,
       keywords: [],
-    }
-  );
-  cxn
+    })
+    .catch((e) => console.error("Failed to upload document to vellum", e));
+  await cxn
     .update(missions)
     .set({
       // TODO
@@ -440,6 +447,7 @@ ${allEvents.map((evt) => `- [${evt.status}] - ${evt.details}`).join("\n")}`;
       reportId: missionReport,
     })
     .where(eq(missions.uuid, missionUuid));
+  await cxn.end();
 };
 
 export default develop;

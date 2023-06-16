@@ -12,6 +12,7 @@ export const tools = pgTable("tools", {
   description: text("description"),
   api: text("api"),
   method: text("method").$type<METHOD>(),
+  format: text("format"),
   createdDate: timestamp("created_date"),
   updatedDate: timestamp("updated_date"),
 });
@@ -28,7 +29,7 @@ export const toolParameters = pgTable("tool_parameters", {
 
 export const missions = pgTable("missions", {
   uuid: uuid("uuid"),
-  label: text("label"),
+  label: text("label").notNull(),
   startDate: timestamp("start_date"),
   reportId: text("report_id"),
 });
