@@ -1,4 +1,4 @@
-import { text, timestamp, pgTable, uuid } from "drizzle-orm/pg-core";
+import { text, timestamp, pgTable, uuid, json } from "drizzle-orm/pg-core";
 
 export const METHODS = ["GET", "POST", "PUT", "DELETE"] as const;
 export type METHOD = (typeof METHODS)[number];
@@ -30,6 +30,7 @@ export const missions = pgTable("missions", {
   uuid: uuid("uuid"),
   label: text("label"),
   startDate: timestamp("start_date"),
+  reportId: text("report_id"),
 });
 
 export const missionEvents = pgTable("mission_events", {
@@ -37,13 +38,17 @@ export const missionEvents = pgTable("mission_events", {
   missionUuid: uuid("mission_uuid"),
   status: text("status"),
   createdDate: timestamp("created_date"),
+  details: text("details"),
 });
 
 export const missionSteps = pgTable("mission_steps", {
   uuid: uuid("uuid"),
   missionUuid: uuid("mission_uuid"),
-  stepHash: text("step_hash"),
+  functionName: text("function_name").notNull(),
+  functionArgs: json("function_args"),
   executionDate: timestamp("execution_date"),
   endDate: timestamp("end_date"),
-  observation: text("observation"),
+  observation: text("observation").notNull().default(""),
+  // @deprecated
+  stepHash: text("step_hash"),
 });

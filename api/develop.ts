@@ -4,7 +4,6 @@ import fs from "fs";
 import path from "path";
 import { v4 } from "uuid";
 import type { AxiosError } from "axios";
-import { VellumClient } from "vellum-ai";
 import { sql, eq, desc } from "drizzle-orm";
 import drizzle from "src/utils/drizzle";
 import {
@@ -14,6 +13,7 @@ import {
   toolParameters,
   missionEvents,
   missionSteps,
+  missions,
 } from "scripts/schema";
 import getMissionPath from "src/utils/getMissionPath";
 import crypto from "crypto";
@@ -22,7 +22,12 @@ import {
   Configuration,
   ChatCompletionRequestMessageFunctionCall,
 } from "openai";
-import { GenerateResponse, GenerateResult } from "vellum-ai/api";
+import {
+  ChatMessageRole,
+  GenerateResponse,
+  GenerateResult,
+} from "vellum-ai/api";
+import vellum from "src/utils/vellumClient";
 
 // const GitStatus: Tool = {
 //   name: "Git Status",
@@ -132,7 +137,6 @@ const zGeneration = z.object({
     .transform((s) =>
       z.record(z.string().or(z.number()).or(z.boolean())).parse(JSON.parse(s))
     ),
-  content: z.string(),
 });
 
 const zGenerationString = z
@@ -184,9 +188,6 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     .groupBy(toolsTable.uuid);
   let iterations = 0;
   let finalOutput = "";
-  const vellum = new VellumClient({
-    apiKey: process.env.VELLUM_API_KEY || "",
-  });
   const functions = tools.map((tool) => {
     return {
       name: tool.name.toLowerCase().replace(/\s/g, "_"),
@@ -223,6 +224,29 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         finalOutput = "Mission stopped due to an interruption signal.";
         break;
       }
+      const previousMissionSteps = await cxn
+        .select({
+          observation: missionSteps.observation,
+          functionName: missionSteps.functionName,
+          functionArgs: missionSteps.functionArgs,
+        })
+        .from(missionSteps)
+        .where(eq(missionEvents.missionUuid, missionUuid))
+        .orderBy(desc(missionSteps.executionDate));
+      const chatHistory = previousMissionSteps.flatMap((step) => [
+        {
+          role: "assistant" as const,
+          function_call: {
+            name: step.functionName,
+            arguments: JSON.stringify(step.functionArgs),
+          },
+        },
+        {
+          role: "function" as const,
+          content: step.observation,
+          name: step.functionName,
+        },
+      ]);
 
       const response = useNative
         ? await new OpenAIApi(
@@ -242,6 +266,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
   
             When the user asks, you must advise the next step, along with your thought process on why you want to make that action.`,
                 },
+                ...chatHistory,
                 {
                   role: "user",
                   content: "What is the next action you need to take?",
@@ -257,10 +282,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
                       completions: r.data.choices.map((c) => ({
                         id: r.data.id,
                         text: c.message?.function_call
-                          ? JSON.stringify({
-                              ...c.message.function_call,
-                              content: c.message.content || "",
-                            })
+                          ? JSON.stringify(c.message.function_call)
                           : "",
                         modelVersionId: r.data.model,
                       })),
@@ -289,6 +311,10 @@ const develop = async (evt: Parameters<Handler>[0]) => {
                   repo,
                   issue,
                 },
+                chatHistory: chatHistory.map(({ role, ...rest }) => ({
+                  role: role.toUpperCase() as ChatMessageRole,
+                  text: JSON.stringify(rest),
+                })),
                 // @ts-ignore - TODO support in Vellum directly
                 overrides: {
                   functions,
@@ -313,11 +339,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         finalOutput = `Mission failed due to an Model Generation Parsing error: ${parsed.error.message}`;
         break;
       }
-      const {
-        name: functionName,
-        arguments: functionArgs,
-        content,
-      } = parsed.data;
+      const { name: functionName, arguments: functionArgs } = parsed.data;
       const executionDate = new Date();
       const hash = crypto
         .createHash("sha256")
@@ -334,6 +356,9 @@ const develop = async (evt: Parameters<Handler>[0]) => {
           uuid: v4(),
           missionUuid,
           executionDate,
+          functionName,
+          functionArgs,
+          // @deprecated
           stepHash: hash.digest("hex"),
         })
         .returning({ stepUuid: missionSteps.uuid });
@@ -368,26 +393,53 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     }`;
   }
   const finish = finalOutput || "Stopped due to max iterations.";
-  const missionReport = `Mission: Close ${owner}/${repo}#${issue}
-Mission ID: ${missionUuid}
-Event Log: TODO - iterate over missionEvents
-
-I then finished the mission after: ${finish}`;
   await cxn.insert(missionEvents).values({
     uuid: v4(),
     missionUuid,
     status: "FINISHED",
     createdDate: new Date(),
+    details: finish,
+  });
+  const [{ missionLabel }] = await cxn
+    .select({ missionLabel: missions.label })
+    .from(missions)
+    .where(eq(missions.uuid, missionUuid));
+  const allEvents = await cxn
+    .select({ details: missionEvents.details, status: missionEvents.status })
+    .from(missionEvents)
+    .where(eq(missionEvents.missionUuid, missionUuid));
+  const missionReport = `Mission: ${missionLabel}
+Mission ID: ${missionUuid}
+Event Log:
+${allEvents.map((evt) => `- [${evt.status}] - ${evt.details}`).join("\n")}`;
+  await cxn.insert(missionEvents).values({
+    uuid: v4(),
+    missionUuid,
+    status: "FINISHED",
+    createdDate: new Date(),
+    details: finish,
   });
 
   const fileName = path.join(root, `report.txt`);
   fs.writeFileSync(fileName, missionReport);
-  const upr = await vellum.documents.upload(fs.createReadStream(fileName), {
-    label: `Mission Report for ${owner}/${repo}#${issue}`,
-    addToIndexNames: ["padawan-missions"],
-    externalId: missionUuid,
-    keywords: [],
-  });
+  // const { documentId } = 
+  await vellum.documents.upload(
+    fs.createReadStream(fileName),
+    {
+      label: `Mission Report for ${owner}/${repo}#${issue}`,
+      addToIndexNames: ["padawan-missions"],
+      externalId: missionUuid,
+      keywords: [],
+    }
+  );
+  cxn
+    .update(missions)
+    .set({
+      // TODO
+      // reportId: documentId,
+      reportId: missionReport,
+    })
+    .where(eq(missions.uuid, missionUuid));
 };
 
 export default develop;
