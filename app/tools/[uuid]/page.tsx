@@ -7,9 +7,60 @@ import ListItemButton from "@mui/material/ListItemButton";
 import ListItemText from "@mui/material/ListItemText";
 import IconButton from "@mui/material/IconButton";
 import DeleteIcon from "@mui/icons-material/Delete";
+import SaveIcon from "@mui/icons-material/Save";
+import CancelIcon from "@mui/icons-material/Cancel";
 import deleteTool from "app/actions/deleteTool";
+import updateToolName from "app/actions/updateToolName";
 import getTool from "app/actions/getTool";
 import deleteToolParameter from "app/actions/deleteToolParameter";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
+import Dialog from "@mui/material/Dialog";
+import DialogTitle from "@mui/material/DialogTitle";
+import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
+import DialogActions from "@mui/material/DialogActions";
+import Select from "@mui/material/Select";
+import { PARAMETER_TYPES } from "scripts/schema";
+import MenuItem from "@mui/material/MenuItem";
+import updateToolParameter from "app/actions/updateToolParameter";
+
+const EditableName = ({ name, uuid }: { name: string; uuid: string }) => {
+  const [isEdit, setIsEditing] = React.useState(false);
+  return isEdit ? (
+    <form action={updateToolName}>
+      <input type="hidden" name="uuid" value={uuid} />
+      <TextField
+        name={"name"}
+        label={"Name"}
+        fullWidth
+        defaultValue={name}
+        InputProps={{
+          endAdornment: (
+            <Box display={"flex"} gap={1} alignItems={"center"}>
+              <IconButton type={"submit"} title={"Save"}>
+                <SaveIcon />
+              </IconButton>
+              <IconButton onClick={() => setIsEditing(false)} title={"Cancel"}>
+                <CancelIcon />
+              </IconButton>
+            </Box>
+          ),
+        }}
+      >
+        {name}
+      </TextField>
+    </form>
+  ) : (
+    <Typography
+      variant="h2"
+      sx={{ cursor: "pointer", "&:hover": { bgcolor: "#eeeeee" } }}
+      onClick={() => setIsEditing(true)}
+    >
+      {name}
+    </Typography>
+  );
+};
 
 const ToolPage = ({ params }: { params: { uuid: string } }) => {
   const [tool, setTool] = React.useState<Awaited<
@@ -18,16 +69,31 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
   React.useEffect(() => {
     getTool(params).then(setTool);
   }, [setTool, params.uuid]);
+  const [editingParameterUuid, setEditingParameterUuid] = React.useState("");
+  const closeEditParameterDialog = React.useCallback(
+    () => setEditingParameterUuid(""),
+    [setEditingParameterUuid]
+  );
+  const editingParameter = React.useMemo(
+    () =>
+      (tool?.parameters || []).find(
+        (parameter) => parameter.uuid === editingParameterUuid
+      ),
+    [tool, editingParameterUuid]
+  );
   return (
     <Box>
       {tool && (
         <Box>
-          <h2>{tool.name}</h2>
+          <EditableName name={tool.name} uuid={tool.uuid} />
           <p>{tool.description}</p>
           <h2>Parameters</h2>
           <List>
             {tool.parameters.map((parameter) => (
-              <ListItemButton key={parameter.uuid}>
+              <ListItemButton
+                key={parameter.uuid}
+                onClick={() => setEditingParameterUuid(parameter.uuid)}
+              >
                 <ListItemText
                   primary={
                     <Box>
@@ -45,6 +111,50 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
               </ListItemButton>
             ))}
           </List>
+          <Dialog
+            open={!!editingParameterUuid}
+            onClose={closeEditParameterDialog}
+          >
+            <form action={updateToolParameter}>
+              <DialogTitle>Subscribe</DialogTitle>
+              <DialogContent>
+                <DialogContentText>
+                  To subscribe to this website, please enter your email address
+                  here. We will send updates occasionally.
+                </DialogContentText>
+                <input type="hidden" name="uuid" value={editingParameterUuid} />
+                <TextField
+                  name={`name`}
+                  label={"Name"}
+                  sx={{ marginTop: 2, marginRight: 2, flexGrow: 1 }}
+                  defaultValue={editingParameter?.name}
+                />
+                <Select
+                  label="Type"
+                  name={`type`}
+                  sx={{ marginTop: 2 }}
+                  defaultValue={editingParameter?.type}
+                >
+                  {PARAMETER_TYPES.map((pt) => (
+                    <MenuItem value={pt} key={pt}>
+                      {pt}
+                    </MenuItem>
+                  ))}
+                </Select>
+                <TextField
+                  name={`description`}
+                  label={"Description"}
+                  fullWidth
+                  sx={{ marginTop: 2 }}
+                  defaultValue={editingParameter?.description}
+                />
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={closeEditParameterDialog}>Cancel</Button>
+                <Button type={"submit"}>Save</Button>
+              </DialogActions>
+            </form>
+          </Dialog>
         </Box>
       )}
       <Box

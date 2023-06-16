@@ -87,11 +87,9 @@ export default function Page() {
         name={"parameters"}
         FieldSet={({ onRemove }) => (
           <FormGroup row sx={{ gap: 2 }}>
-            <TextField name={`parameters.name`} label={"Name"} />
             <TextField
-              name={`parameters.description`}
-              label={"Description"}
-              sx={{ flexGrow: 1 }}
+              name={`parameters.name`}
+              label={"Name"}
             />
             <Select
               defaultValue={PARAMETER_TYPES[0]}
@@ -104,6 +102,11 @@ export default function Page() {
                 </MenuItem>
               ))}
             </Select>
+            <TextField
+              name={`parameters.description`}
+              label={"Description"}
+              sx={{ flexGrow: 1 }}
+            />
             <IconButton sx={{ marginLeft: 4 }} onClick={onRemove}>
               <DeleteIcon />
             </IconButton>

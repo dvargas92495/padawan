@@ -7,7 +7,7 @@ export const PARAMETER_TYPES = ["string", "boolean", "number"] as const;
 export type PARAMETER_TYPE = (typeof PARAMETER_TYPES)[number];
 
 export const tools = pgTable("tools", {
-  uuid: uuid("uuid"),
+  uuid: uuid("uuid").primaryKey(),
   name: text("name"),
   description: text("description"),
   api: text("api"),
