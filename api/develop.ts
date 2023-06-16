@@ -206,8 +206,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
             repo,
             issue,
           },
-          // TODO patch-package history - omg make an impression and put up a PR for this (!!)
-          // @ts-ignore
+          // @ts-ignore - TODO support in Vellum directly
           overrides: {
             functions,
           },
