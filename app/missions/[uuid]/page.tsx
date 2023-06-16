@@ -8,7 +8,7 @@ import getMission from "app/actions/getMission";
 import Typography from "@mui/material/Typography";
 import Link from "next/link";
 
-const REFRESH_INTERVAL = 1000 * 15;
+const REFRESH_INTERVAL = 1000 * 5;
 
 type Mission = Awaited<ReturnType<typeof getMission>>;
 
@@ -19,42 +19,23 @@ const PadawanMissionStep = ({
   step: Mission["steps"][number];
   index: number;
 }) => {
-  const [showGeneration, setShowGeneration] = React.useState(false);
   return (
-    <Paper elevation={3} sx={{ my: 2 }}>
-      <Typography variant={"h3"}>Step {index + 1}</Typography>
+    <Paper elevation={3} sx={{ my: 1, p: 4 }}>
+      <Typography variant={"h5"}>Step {index + 1}</Typography>
       {!step ? (
-        <Typography variant="h4">Failed to run</Typography>
+        <Typography variant="h6">Failed to run</Typography>
       ) : (
         <>
-          <Typography variant="h4">
+          <Typography variant="h6">
             {step.functionName} -{" "}
             <code>{JSON.stringify(step.functionArgs)}</code>
           </Typography>
-          {/* 
-      <Typography variant="subtitle1">
-        Executed on {new Date(step.date).toLocaleString()}. Observation:
-      </Typography>
-      <Typography variant="subtitle1">{step.observation}</Typography> */}
-          {showGeneration ? (
-            <pre className="mt-4 rounded-2xl border shadow-lg bg-slate-300 relative p-4 overflow-hidden whitespace-break-spaces">
-              <span
-                className="absolute right-4 top-4 h-8 w-8 bg-red-500 cursor-pointer rounded-full flex items-center justify-center text-white"
-                onClick={() => setShowGeneration(false)}
-              >
-                x
-              </span>
-              {/* <code>{step.generation}</code> */}
-            </pre>
-          ) : (
-            <Typography
-              sx={{ textDecorationLine: "underline", cursor: "pointer" }}
-              variant={"body2"}
-              onClick={() => setShowGeneration(true)}
-            >
-              More info
-            </Typography>
-          )}
+
+          <Typography variant="subtitle1">
+            Executed on {new Date(step.executionDate).toLocaleString()}.
+            Observation:
+          </Typography>
+          <Typography variant="subtitle1">{step.observation}</Typography>
         </>
       )}
     </Paper>
@@ -79,7 +60,7 @@ const MissionPage = ({ params }: { params: { uuid: string } }) => {
   );
   useEffect(() => {
     // TODO - replace with server-sent events
-    if (mission?.status !== "FINISHED") {
+    if (!mission?.report) {
       const interval = setInterval(() => {
         setNextRefresh(new Date().valueOf() + REFRESH_INTERVAL);
         refresh();
@@ -93,20 +74,18 @@ const MissionPage = ({ params }: { params: { uuid: string } }) => {
       };
     }
     return () => {};
-  }, [mission?.status, refresh]);
+  }, [mission?.report, refresh]);
   return (
     <Box>
       {mission && (
         <Box>
-          <h1>
-            {mission.label} [{mission.status}]
-          </h1>
-          <p>
-            <>
+          <Typography variant={"h2"}>{mission.label}</Typography>
+          {!mission.report && (
+            <Typography variant={"subtitle2"}>
               Next refresh in{" "}
               {Math.floor((nextRefresh.valueOf() - now.valueOf()) / 1000)}
-            </>
-          </p>
+            </Typography>
+          )}
           <Box flexGrow={1} display={"flex"} flexDirection={"column"} gap={8}>
             {mission.steps.map((step, index) => (
               <PadawanMissionStep step={step} key={index} index={index} />

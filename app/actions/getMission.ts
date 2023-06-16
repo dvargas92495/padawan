@@ -1,9 +1,11 @@
 "use server";
 
 import { eq, sql } from "drizzle-orm";
-import { missionEvents, missions, missionSteps } from "scripts/schema";
+import { missions, missionSteps } from "scripts/schema";
 import drizzle from "src/utils/drizzle";
-import vellumClient from "src/utils/vellumClient";
+import getMissionPath from "src/utils/getMissionPath";
+import path from "path";
+import fs from "fs";
 
 const getMission = async (args: { uuid: string }) => {
   const cxn = drizzle();
@@ -12,7 +14,6 @@ const getMission = async (args: { uuid: string }) => {
       uuid: missions.uuid,
       label: sql<string>`min(${missions.label})`,
       startDate: sql<string>`min(${missions.startDate})`,
-      status: sql<string>`max(${missionEvents.status})`,
       report: sql<string>`min(${missions.reportId})`,
       steps: sql<
         {
@@ -38,11 +39,13 @@ const getMission = async (args: { uuid: string }) => {
     })
     .from(missions)
     .leftJoin(missionSteps, eq(missions.uuid, missionSteps.missionUuid))
-    .leftJoin(missionEvents, eq(missions.uuid, missionEvents.missionUuid))
     .where(eq(missions.uuid, args.uuid))
     .groupBy(missions.uuid);
   await cxn.end();
-  // @ts-ignore
+  const reportFile = path.join(getMissionPath(mission.uuid), "report.txt");
+  mission.report = fs.existsSync(reportFile)
+    ? fs.readFileSync(reportFile).toString()
+    : "";
   return mission;
 };
 

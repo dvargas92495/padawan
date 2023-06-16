@@ -21,6 +21,7 @@ import { OpenAIApi, Configuration } from "openai";
 import { ChatMessageRole, GenerateResponse } from "vellum-ai/api";
 import vellum from "src/utils/vellumClient";
 import nunjucks from "nunjucks";
+nunjucks.configure({ autoescape: false });
 
 // const GitStatus: Tool = {
 //   name: "Git Status",
@@ -250,6 +251,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
             name: step.functionName,
             arguments: JSON.stringify(step.functionArgs),
           },
+          content: "",
         },
         {
           role: "function" as const,
@@ -293,7 +295,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
                         id: r.data.id,
                         text: c.message?.function_call
                           ? JSON.stringify(c.message.function_call)
-                          : "",
+                          : c.message?.content || "",
                         modelVersionId: r.data.model,
                       })),
                     },
@@ -301,17 +303,31 @@ const develop = async (evt: Parameters<Handler>[0]) => {
                 ],
               };
             })
-            .catch(
-              (e): GenerateResponse => ({
+            .catch((e): GenerateResponse => {
+              const error = (message: string): GenerateResponse => ({
                 results: [
                   {
                     error: {
-                      message: JSON.stringify((e as AxiosError).response?.data),
+                      message,
                     },
                   },
                 ],
-              })
-            )
+              });
+              const axiosError = e as AxiosError;
+              if (!axiosError.isAxiosError) {
+                return error(`Non-Axios Error: ${e.message || e.toString()}`);
+              }
+              if (!axiosError.response) {
+                return error(`Non-Response Error: ${axiosError.message}`);
+              }
+              const { data } = axiosError.response;
+              if (typeof data?.error?.message !== "string") {
+                return error(
+                  `Unknown Axios Data Error: ${JSON.stringify(data)}`
+                );
+              }
+              return error(data.error.message);
+            })
         : await vellum.generate({
             deploymentName: "padawan-development",
             requests: [
@@ -329,19 +345,32 @@ const develop = async (evt: Parameters<Handler>[0]) => {
                 overrides: {
                   functions,
                 },
-                // TODO chatMessages
               },
             ],
           });
 
       const [result] = response.results;
       if (result.error || !result.data) {
-        finalOutput = `Mission failed due to a Model error: ${result.error?.message}`;
+        finalOutput = `Mission failed due to a Model error: ${
+          result.error?.message
+        }\nChat History: ${JSON.stringify(chatHistory, null, 2)}`;
         break;
       }
       const generation = result.data.completions[0].text;
       if (!generation) {
-        finalOutput = `Mission failed due to an Model Response error: No generation returned.`;
+        finalOutput = `Mission failed due to an Model Response error: No generation returned.\nChat History: ${JSON.stringify(
+          chatHistory,
+          null,
+          2
+        )}`;
+        break;
+      }
+      if (!/^{.*}$/.test(generation)) {
+        finalOutput = `Mission failed due to an Model Response error: \`${generation}\` is not a valid JSON.\nChat History: ${JSON.stringify(
+          chatHistory,
+          null,
+          2
+        )}`;
         break;
       }
       const parsed = zGenerationString.safeParse(generation);
@@ -372,11 +401,6 @@ const develop = async (evt: Parameters<Handler>[0]) => {
           stepHash: hash.digest("hex"),
         })
         .returning({ stepUuid: missionSteps.uuid });
-
-      if (!stepUuid) {
-        finalOutput = `Mission failed due to a DB error: Failed to record step.`;
-        break;
-      }
 
       const observation = !functionsByName[functionName]
         ? `We did not understand your last instruction`
@@ -415,7 +439,8 @@ const develop = async (evt: Parameters<Handler>[0]) => {
   const allEvents = await cxn
     .select({ details: missionEvents.details, status: missionEvents.status })
     .from(missionEvents)
-    .where(eq(missionEvents.missionUuid, missionUuid));
+    .where(eq(missionEvents.missionUuid, missionUuid))
+    .orderBy(missionEvents.createdDate);
   const missionReport = `Mission: ${missionLabel}
 Mission ID: ${missionUuid}
 Event Log:
@@ -430,24 +455,24 @@ ${allEvents.map((evt) => `- [${evt.status}] - ${evt.details}`).join("\n")}`;
 
   const fileName = path.join(root, `report.txt`);
   fs.writeFileSync(fileName, missionReport);
-  // const { documentId } =
-  await vellum.documents
-    .upload(fs.createReadStream(fileName), {
+  const { documentId } = await vellum.documents.upload(
+    fs.createReadStream(fileName),
+    {
       label: missionLabel,
       addToIndexNames: ["padawan-missions"],
       externalId: missionUuid,
       keywords: [],
-    })
-    .catch((e) => console.error("Failed to upload document to vellum", e));
+    }
+  );
+  // .catch((e) => console.error("Failed to upload document to vellum", e));
   await cxn
     .update(missions)
     .set({
-      // TODO
-      // reportId: documentId,
-      reportId: missionReport,
+      reportId: documentId,
     })
     .where(eq(missions.uuid, missionUuid));
   await cxn.end();
+  console.log("Ended development cycle");
 };
 
 export default develop;

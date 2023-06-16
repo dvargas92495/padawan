@@ -9,7 +9,7 @@ const logic = async () => {
     .select({
       uuid: missions.uuid,
       label: sql<string>`MIN(${missions.label})`,
-      startDate: sql<string>`to_char(MIN(${missions.startDate}), 'YYYY-MM-DD hh:mm:ss') as start_date`,
+      startDate: sql<string>`to_char(MIN(${missions.startDate}), 'YYYY-MM-DD HH24:MI:SS') as start_date`,
       steps: sql<number>`COUNT(${missionSteps.uuid})`,
     })
     .from(missions)
