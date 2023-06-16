@@ -44,4 +44,6 @@ export const missionSteps = pgTable("mission_steps", {
   missionUuid: uuid("mission_uuid"),
   stepHash: text("step_hash"),
   executionDate: timestamp("execution_date"),
+  endDate: timestamp("end_date"),
+  observation: text("observation"),
 });
