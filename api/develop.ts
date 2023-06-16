@@ -2,8 +2,8 @@ import type { Handler } from "aws-lambda";
 import { z } from "zod";
 import fs from "fs";
 import path from "path";
-import os from "os";
 import { v4 } from "uuid";
+import type { AxiosError } from "axios";
 import { VellumClient } from "vellum-ai";
 import { sql, eq, desc } from "drizzle-orm";
 import drizzle from "src/utils/drizzle";
@@ -17,6 +17,12 @@ import {
 } from "scripts/schema";
 import getMissionPath from "src/utils/getMissionPath";
 import crypto from "crypto";
+import {
+  OpenAIApi,
+  Configuration,
+  ChatCompletionRequestMessageFunctionCall,
+} from "openai";
+import { GenerateResponse, GenerateResult } from "vellum-ai/api";
 
 // const GitStatus: Tool = {
 //   name: "Git Status",
@@ -86,6 +92,7 @@ const zArgs = z.object({
   type: z.literal("User").or(z.literal("Organization")),
   missionUuid: z.string(),
   maxSteps: z.number().default(5), // 15
+  useNative: z.boolean().default(false),
 });
 
 const invokeTool = ({
@@ -118,6 +125,20 @@ const invokeTool = ({
   });
 };
 
+const zGeneration = z.object({
+  name: z.string(),
+  arguments: z
+    .string()
+    .transform((s) =>
+      z.record(z.string().or(z.number()).or(z.boolean())).parse(JSON.parse(s))
+    ),
+  content: z.string(),
+});
+
+const zGenerationString = z
+  .string()
+  .transform((s) => zGeneration.parse(JSON.parse(s)));
+
 const develop = async (evt: Parameters<Handler>[0]) => {
   const {
     issue,
@@ -126,7 +147,9 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     type: _type,
     missionUuid,
     maxSteps,
+    useNative,
   } = zArgs.parse(evt);
+  console.log("running mission", missionUuid);
   const root = getMissionPath(missionUuid);
   fs.mkdirSync(root, { recursive: true });
   const cxn = drizzle();
@@ -166,7 +189,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
   });
   const functions = tools.map((tool) => {
     return {
-      name: tool.name,
+      name: tool.name.toLowerCase().replace(/\s/g, "_"),
       description: tool.description,
       parameters: {
         type: "object",
@@ -181,91 +204,168 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     };
   });
   const apisByName = Object.fromEntries(
-    tools.map((t) => [t.name, { api: t.api, method: t.method }])
+    tools.map((t) => [
+      t.name.toLowerCase().replace(/\s/g, "_"),
+      { api: t.api, method: t.method },
+    ])
   );
   const functionsByName = Object.fromEntries(functions.map((f) => [f.name, f]));
 
-  while (iterations < maxSteps) {
-    const [signal] = await cxn
-      .select({ status: missionEvents.status })
-      .from(missionEvents)
-      .where(eq(missionEvents.missionUuid, missionUuid))
-      .orderBy(desc(missionEvents.createdDate))
-      .limit(1);
-    if (signal?.status === "STOP") {
-      finalOutput = "Mission stopped due to an interruption signal.";
-      break;
-    }
+  try {
+    while (iterations < maxSteps) {
+      const [signal] = await cxn
+        .select({ status: missionEvents.status })
+        .from(missionEvents)
+        .where(eq(missionEvents.missionUuid, missionUuid))
+        .orderBy(desc(missionEvents.createdDate))
+        .limit(1);
+      if (signal?.status === "STOP") {
+        finalOutput = "Mission stopped due to an interruption signal.";
+        break;
+      }
 
-    const response = await vellum.generate({
-      deploymentName: "padawan-development",
-      requests: [
-        {
-          inputValues: {
-            owner,
-            repo,
-            issue,
-          },
-          // @ts-ignore - TODO support in Vellum directly
-          overrides: {
-            functions,
-          },
-          // TODO chatMessages
-        },
-      ],
-    });
+      const response = useNative
+        ? await new OpenAIApi(
+            new Configuration({
+              apiKey: process.env.OPENAI_API_KEY || "",
+            })
+          )
+            .createChatCompletion({
+              stop: undefined,
+              model: "gpt-3.5-turbo-0613",
+              temperature: 0,
+              n: 1,
+              messages: [
+                {
+                  role: "system",
+                  content: `You are an engineer working on the GitHub repository: ${owner}/${repo}. You have just been assigned to issue #${issue}. Your mission is to create a pull request that satisfies the requirements of the issue.
+  
+            When the user asks, you must advise the next step, along with your thought process on why you want to make that action.`,
+                },
+                {
+                  role: "user",
+                  content: "What is the next action you need to take?",
+                },
+              ],
+              functions,
+            })
+            .then((r): GenerateResponse => {
+              return {
+                results: [
+                  {
+                    data: {
+                      completions: r.data.choices.map((c) => ({
+                        id: r.data.id,
+                        text: c.message?.function_call
+                          ? JSON.stringify({
+                              ...c.message.function_call,
+                              content: c.message.content || "",
+                            })
+                          : "",
+                        modelVersionId: r.data.model,
+                      })),
+                    },
+                  },
+                ],
+              };
+            })
+            .catch(
+              (e): GenerateResponse => ({
+                results: [
+                  {
+                    error: {
+                      message: JSON.stringify((e as AxiosError).response?.data),
+                    },
+                  },
+                ],
+              })
+            )
+        : await vellum.generate({
+            deploymentName: "padawan-development",
+            requests: [
+              {
+                inputValues: {
+                  owner,
+                  repo,
+                  issue,
+                },
+                // @ts-ignore - TODO support in Vellum directly
+                overrides: {
+                  functions,
+                },
+                // TODO chatMessages
+              },
+            ],
+          });
 
-    const [result] = response.results;
-    if (result.error || !result.data) {
-      finalOutput = `Mission failed due to an error: ${result.error?.message}`;
-      break;
-    }
-    const generation = result.data.completions[0].text;
-    const functionName = generation; // TODO get this from the response
-    const functionArgs = JSON.parse(generation); // TODO get this from the response
-    const executionDate = new Date();
-    const hash = crypto
-      .createHash("sha256")
-      .update(executionDate.toJSON())
-      .update(functionName);
-    Object.entries(functionArgs)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .forEach(([key, value]) => {
-        hash.update(key).update(JSON.stringify(value));
-      });
-    const [{ stepUuid }] = await cxn
-      .insert(missionSteps)
-      .values({
-        uuid: v4(),
-        missionUuid,
-        executionDate,
-        stepHash: hash.digest("hex"),
-      })
-      .returning({ stepUuid: missionSteps.uuid });
-
-    if (!stepUuid) {
-      finalOutput = `Mission failed due to an error: Failed to record step.`;
-      break;
-    }
-
-    const observation = !functionsByName[functionName]
-      ? `We did not understand your last instruction`
-      : await invokeTool({
+      const [result] = response.results;
+      if (result.error || !result.data) {
+        finalOutput = `Mission failed due to a Model error: ${result.error?.message}`;
+        break;
+      }
+      const generation = result.data.completions[0].text;
+      if (!generation) {
+        finalOutput = `Mission failed due to an Model Response error: No generation returned.`;
+        break;
+      }
+      const parsed = zGenerationString.safeParse(generation);
+      if (!parsed.success) {
+        finalOutput = `Mission failed due to an Model Generation Parsing error: ${parsed.error.message}`;
+        break;
+      }
+      const {
+        name: functionName,
+        arguments: functionArgs,
+        content,
+      } = parsed.data;
+      const executionDate = new Date();
+      const hash = crypto
+        .createHash("sha256")
+        .update(executionDate.toJSON())
+        .update(functionName);
+      Object.entries(functionArgs)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([key, value]) => {
+          hash.update(key).update(JSON.stringify(value));
+        });
+      const [{ stepUuid }] = await cxn
+        .insert(missionSteps)
+        .values({
+          uuid: v4(),
           missionUuid,
-          body: functionArgs,
-          ...apisByName[functionName],
+          executionDate,
+          stepHash: hash.digest("hex"),
         })
-          .then((r) => r.text())
-          .catch((e) => e.message);
+        .returning({ stepUuid: missionSteps.uuid });
 
-    await cxn
-      .update(missionSteps)
-      .set({
-        observation,
-        endDate: new Date(),
-      })
-      .where(eq(missionSteps.uuid, stepUuid));
-    iterations++;
+      if (!stepUuid) {
+        finalOutput = `Mission failed due to a DB error: Failed to record step.`;
+        break;
+      }
+
+      const observation = !functionsByName[functionName]
+        ? `We did not understand your last instruction`
+        : await invokeTool({
+            missionUuid,
+            body: functionArgs,
+            ...apisByName[functionName],
+          })
+            .then((r) => r.text())
+            .catch((e) => e.message);
+
+      await cxn
+        .update(missionSteps)
+        .set({
+          observation,
+          endDate: new Date(),
+        })
+        .where(eq(missionSteps.uuid, stepUuid));
+      iterations++;
+    }
+  } catch (e) {
+    finalOutput = `Mission failed due to an unexpected error: ${
+      (e as Error).message
+    }`;
   }
   const finish = finalOutput || "Stopped due to max iterations.";
   const missionReport = `Mission: Close ${owner}/${repo}#${issue}
@@ -282,7 +382,7 @@ I then finished the mission after: ${finish}`;
 
   const fileName = path.join(root, `report.txt`);
   fs.writeFileSync(fileName, missionReport);
-  await vellum.documents.upload(fs.createReadStream(fileName), {
+  const upr = await vellum.documents.upload(fs.createReadStream(fileName), {
     label: `Mission Report for ${owner}/${repo}#${issue}`,
     addToIndexNames: ["padawan-missions"],
     externalId: missionUuid,

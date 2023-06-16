@@ -22,7 +22,7 @@
     "drizzle-orm": "^0.26.5",
     "express": "^4.18.2",
     "next": "^13.4.5",
-    "openai": "^3.2.1",
+    "openai": "^3.3.0",
     "postgres": "^3.3.5",
     "vellum-ai": "^0.0.15"
   },

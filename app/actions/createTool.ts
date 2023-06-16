@@ -14,13 +14,17 @@ import { redirect } from "next/navigation";
 const createTool = async (args: FormData) => {
   const toolUuid = v4();
   const nameArg = args.get("name");
+  const name = typeof nameArg === "string" ? nameArg : "";
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+    throw new Error(`Invalid name: ${name}`);
+  }
   const descriptionArg = args.get("description");
   const apiArg = args.get("api");
   const methodArg = args.get("method");
   const cxn = drizzle();
   await cxn.insert(tools).values({
     uuid: toolUuid,
-    name: typeof nameArg === "string" ? nameArg : "",
+    name,
     description: typeof descriptionArg === "string" ? descriptionArg : "",
     api: typeof apiArg === "string" ? apiArg : "",
     method: METHODS.includes(methodArg as METHOD)

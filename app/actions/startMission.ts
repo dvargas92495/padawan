@@ -32,6 +32,8 @@ const startTool = async (data: FormData) => {
       issue,
       type: "User",
       missionUuid,
+      useNative: true,
+      maxSteps: 1,
     }),
   });
   redirect(`/missions/${missionUuid}`);
