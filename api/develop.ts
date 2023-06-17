@@ -14,6 +14,7 @@ import {
   missionEvents,
   missionSteps,
   missions,
+  tokens,
 } from "scripts/schema";
 import getMissionPath from "src/utils/getMissionPath";
 import crypto from "crypto";
@@ -92,54 +93,8 @@ const zArgs = z.object({
   missionUuid: z.string(),
   maxSteps: z.number().default(5), // 15
   useNative: z.boolean().default(false),
+  deploymentName: z.string().optional().default("padawan-development"),
 });
-
-const invokeTool = async ({
-  missionUuid,
-  api,
-  method,
-  body,
-  format,
-}: {
-  missionUuid: string;
-  api: string;
-  method: METHOD;
-  body: Record<string, string | number | boolean>;
-  format?: string;
-}) => {
-  const url = new URL(nunjucks.renderString(api, body));
-  const headers: HeadersInit = {
-    "x-padawan-mission": missionUuid,
-    // Authorization
-  };
-  const responseHandler = async (r: Response): Promise<string> => {
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(
-        `${method} request to ${api} failed (${r.status}): ${text}`
-      );
-    }
-    if (r.headers.get("Content-Type")?.startsWith("application/json")) {
-      const data = await r.json();
-      return format
-        ? nunjucks.renderString(format, data)
-        : JSON.stringify(data);
-    }
-    return r.text();
-  };
-  if (method === "GET" || method === "DELETE") {
-    Object.entries(body).forEach(([key, value]) => {
-      url.searchParams.append(key, value.toString());
-    });
-    return fetch(url.toString(), { method, headers }).then(responseHandler);
-  }
-  headers["Content-Type"] = "application/json";
-  return fetch(url.toString(), {
-    method,
-    body: JSON.stringify(body),
-    headers,
-  }).then(responseHandler);
-};
 
 const zGeneration = z.object({
   name: z.string(),
@@ -163,6 +118,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     missionUuid,
     maxSteps,
     useNative,
+    deploymentName,
   } = zArgs.parse(evt);
   console.log("running mission", missionUuid);
   const root = getMissionPath(missionUuid);
@@ -329,7 +285,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
               return error(data.error.message);
             })
         : await vellum.generate({
-            deploymentName: "padawan-development",
+            deploymentName,
             requests: [
               {
                 inputValues: {
@@ -397,15 +353,70 @@ const develop = async (evt: Parameters<Handler>[0]) => {
           executionDate,
           functionName,
           functionArgs,
-          // @deprecated
-          stepHash: hash.digest("hex"),
         })
         .returning({ stepUuid: missionSteps.uuid });
+
+      const invokeTool = async ({
+        api,
+        method,
+        body,
+        format,
+      }: {
+        api: string;
+        method: METHOD;
+        body: Record<string, string | number | boolean>;
+        format?: string;
+      }) => {
+        const url = new URL(
+          nunjucks.renderString(api, {
+            ...body,
+            padawan_api: process.env.API_URL,
+          })
+        );
+        const headers: HeadersInit = {
+          "x-padawan-mission": missionUuid,
+        };
+        const [token] = await cxn
+          .select({ token: tokens.token })
+          .from(tokens)
+          .where(eq(tokens.domain, url.host));
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+        const responseHandler = async (r: Response): Promise<string> => {
+          if (!r.ok) {
+            const text = await r.text();
+            throw new Error(
+              `${method} request to ${api} failed (${r.status}): ${text}`
+            );
+          }
+          if (r.headers.get("Content-Type")?.startsWith("application/json")) {
+            const data = await r.json();
+            return format
+              ? nunjucks.renderString(format, data)
+              : JSON.stringify(data);
+          }
+          return r.text();
+        };
+        if (method === "GET" || method === "DELETE") {
+          Object.entries(body).forEach(([key, value]) => {
+            url.searchParams.append(key, value.toString());
+          });
+          return fetch(url.toString(), { method, headers }).then(
+            responseHandler
+          );
+        }
+        headers["Content-Type"] = "application/json";
+        return fetch(url.toString(), {
+          method,
+          body: JSON.stringify(body),
+          headers,
+        }).then(responseHandler);
+      };
 
       const observation = !functionsByName[functionName]
         ? `We did not understand your last instruction`
         : await invokeTool({
-            missionUuid,
             body: functionArgs,
             ...apisByName[functionName],
           }).catch((e) => e.message);

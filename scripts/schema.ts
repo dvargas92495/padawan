@@ -71,10 +71,16 @@ export const missionSteps = pgTable(
     executionDate: timestamp("execution_date"),
     endDate: timestamp("end_date"),
     observation: text("observation").notNull().default(""),
-    // @deprecated
-    stepHash: text("step_hash"),
   },
   (table) => ({
     missionIndex: index("IX_mission_index").on(table.missionUuid),
   })
 );
+
+export const tokens = pgTable("tokens", {
+  uuid: uuid("uuid").primaryKey(),
+  token: text("token").notNull(),
+  domain: text("domain").notNull(),
+  createdDate: timestamp("created_date"),
+  updatedDate: timestamp("updated_date"),
+});

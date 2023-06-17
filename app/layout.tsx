@@ -12,6 +12,7 @@ import Drawer from "@mui/material/Drawer";
 import HomeSharpIcon from "@mui/icons-material/HomeSharp";
 import HandymanIcon from "@mui/icons-material/Handyman";
 import RocketIcon from "@mui/icons-material/Rocket";
+import TokenIcon from "@mui/icons-material/Token";
 import RootStyleRegistry from "./emotion";
 import CssBaseline from "@mui/material/CssBaseline";
 
@@ -21,6 +22,7 @@ const TABS = [
   { name: "Home", path: "/", Icon: HomeSharpIcon },
   { name: "Tools", path: "/tools", Icon: HandymanIcon },
   { name: "Missions", path: "/missions", Icon: RocketIcon },
+  { name: "Tokens", path: "/tokens", Icon: TokenIcon },
 ];
 
 export default function RootLayout({
