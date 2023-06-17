@@ -107,10 +107,6 @@ const zGeneration = z.object({
     ),
 });
 
-const zGenerationString = z
-  .string()
-  .transform((s) => zGeneration.parse(JSON.parse(s)));
-
 const develop = async (evt: Parameters<Handler>[0]) => {
   const {
     issue,
@@ -283,28 +279,26 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         )}`;
         break;
       }
-      const parsed = zGenerationString.safeParse(generation);
+      const generationJson = /^{.*}$/.test(generation)
+        ? JSON.parse(generation)
+        : {
+            name: "none",
+            arguments: JSON.stringify({
+              content: generation,
+            }),
+          };
+      const parsed = zGeneration.safeParse(generationJson);
       if (!parsed.success) {
         finalOutput = `Mission failed due to an Model Generation Parsing error: ${parsed.error.message}`;
         break;
       }
       const { name: functionName, arguments: functionArgs } = parsed.data;
-      const executionDate = new Date();
-      const hash = crypto
-        .createHash("sha256")
-        .update(executionDate.toJSON())
-        .update(functionName);
-      Object.entries(functionArgs)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .forEach(([key, value]) => {
-          hash.update(key).update(JSON.stringify(value));
-        });
       const [{ stepUuid }] = await cxn
         .insert(missionSteps)
         .values({
           uuid: v4(),
           missionUuid,
-          executionDate,
+          executionDate: new Date(),
           functionName,
           functionArgs,
         })
@@ -369,7 +363,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
       };
 
       const observation = !functionsByName[functionName]
-        ? `We did not understand your last instruction`
+        ? `Your last instruction was not one of the supported functions. Please use one of the functions I provide you for the next action.`
         : await invokeTool({
             body: functionArgs,
             ...apisByName[functionName],
