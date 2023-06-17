@@ -114,7 +114,7 @@ export default function Page() {
         label={"Format"}
         name={"format"}
         multiline
-        rows={2}
+        minRows={2}
         helperText={
           "The formatting text used to format the response data from this tool before feeding to the model. By default, the response data is fed to the model as a JSON string."
         }

@@ -22,6 +22,8 @@ import { ChatMessageRole, GenerateResponse } from "vellum-ai/api";
 import vellum from "src/utils/vellumClient";
 import nunjucks from "nunjucks";
 import openai from "src/utils/openai";
+import getFunction from "src/utils/getFunction";
+import getToolQuery from "src/utils/getToolQuery";
 nunjucks.configure({ autoescape: false });
 
 // const GitStatus: Tool = {
@@ -124,54 +126,10 @@ const develop = async (evt: Parameters<Handler>[0]) => {
   const root = getMissionPath(missionUuid);
   fs.mkdirSync(root, { recursive: true });
   const cxn = drizzle();
-  const tools = await cxn
-    .select({
-      uuid: toolsTable.uuid,
-      name: sql<string>`min(${toolsTable.name})`,
-      description: sql<string>`min(${toolsTable.description})`,
-      api: sql<string>`min(${toolsTable.api})`,
-      method: sql<METHOD>`min(${toolsTable.method})`,
-      format: sql<METHOD>`min(${toolsTable.format})`,
-      parameters: sql<
-        {
-          uuid: string;
-          name: string;
-          description: string;
-          type: PARAMETER_TYPE;
-        }[]
-      >`coalesce(
-        jsonb_agg(
-          jsonb_build_object(
-            'uuid',${toolParameters.uuid},
-            'name',${toolParameters.name},
-            'description',${toolParameters.description},
-            'type',${toolParameters.type}
-          )
-        ) FILTER (WHERE ${toolParameters.uuid} IS NOT NULL), 
-        '[]'::jsonb
-      )`,
-    })
-    .from(toolsTable)
-    .leftJoin(toolParameters, eq(toolsTable.uuid, toolParameters.toolUuid))
-    .groupBy(toolsTable.uuid);
+  const tools = await getToolQuery(cxn);
   let iterations = 0;
   let finalOutput = "";
-  const functions = tools.map((tool) => {
-    return {
-      name: tool.name.toLowerCase().replace(/\s/g, "_"),
-      description: tool.description,
-      parameters: {
-        type: "object",
-        required: tool.parameters.map((p) => p.name),
-        properties: Object.fromEntries(
-          tool.parameters.map((p) => [
-            p.name,
-            { type: p.type, description: p.description },
-          ])
-        ),
-      },
-    };
-  });
+  const functions = tools.map(getFunction);
   const apisByName = Object.fromEntries(
     tools.map((t) => [
       t.name.toLowerCase().replace(/\s/g, "_"),

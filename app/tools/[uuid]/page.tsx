@@ -13,7 +13,7 @@ import deleteTool from "app/actions/deleteTool";
 import updateToolName from "app/actions/updateToolName";
 import getTool from "app/actions/getTool";
 import deleteToolParameter from "app/actions/deleteToolParameter";
-import TextField from "@mui/material/TextField";
+import TextField, { TextFieldProps } from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import Dialog from "@mui/material/Dialog";
 import DialogTitle from "@mui/material/DialogTitle";
@@ -38,12 +38,16 @@ const EditableField = ({
   uuid,
   updateAction,
   variant,
+  fontFamily,
+  TextFieldProps = {},
 }: {
   label: string;
   updateAction: (req: FormData) => Promise<void>;
   defaultValue: string;
   uuid: string;
   variant: Variant;
+  fontFamily?: string;
+  TextFieldProps?: TextFieldProps;
 }) => {
   const [isEdit, setIsEditing] = React.useState(false);
   return isEdit ? (
@@ -66,6 +70,7 @@ const EditableField = ({
             </Box>
           ),
         }}
+        {...TextFieldProps}
       />
     </Box>
   ) : (
@@ -81,6 +86,8 @@ const EditableField = ({
           cursor: "pointer",
           "&:hover": { bgcolor: "#eeeeee" },
           marginBottom: 4,
+          whiteSpace: "pre-wrap",
+          fontFamily,
         }}
         onClick={() => setIsEditing(true)}
       >
@@ -136,6 +143,7 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
             defaultValue={tool.api}
             uuid={tool.uuid}
             updateAction={updateToolApi}
+            fontFamily="monospace"
             label={"API"}
             variant="body2"
           />
@@ -177,6 +185,11 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
             updateAction={updateToolFormat}
             label={"Format"}
             variant={"body1"}
+            fontFamily="monospace"
+            TextFieldProps={{
+              multiline: true,
+              minRows: 2,
+            }}
           />
           <Dialog open={newParameterOpen} onClose={closeNewParameterDialog}>
             <form action={createToolParameter}>
