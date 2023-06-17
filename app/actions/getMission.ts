@@ -19,7 +19,8 @@ const getMission = async (args: { uuid: string }) => {
         {
           hash: string;
           functionName: string;
-          functionArgs: Record<string, string | number | boolean>;
+          // TODO - Figure out why this is not returning the correct type
+          functionArgs: string; // Record<string, string | number | boolean>;
           observation: string;
           executionDate: Date;
           endDate: Date;

@@ -22,6 +22,7 @@
     "drizzle-orm": "^0.26.5",
     "express": "^4.18.2",
     "next": "^13.4.5",
+    "ngrok": "^5.0.0-beta.2",
     "nunjucks": "^3.2.4",
     "openai": "^3.3.0",
     "postgres": "^3.3.5",

@@ -4,20 +4,16 @@ import fs from "fs";
 import path from "path";
 import { v4 } from "uuid";
 import type { AxiosError } from "axios";
-import { sql, eq, desc } from "drizzle-orm";
+import { eq, desc, asc } from "drizzle-orm";
 import drizzle from "src/utils/drizzle";
 import {
-  tools as toolsTable,
   METHOD,
-  PARAMETER_TYPE,
-  toolParameters,
   missionEvents,
   missionSteps,
   missions,
   tokens,
 } from "scripts/schema";
 import getMissionPath from "src/utils/getMissionPath";
-import crypto from "crypto";
 import { ChatMessageRole, GenerateResponse } from "vellum-ai/api";
 import vellum from "src/utils/vellumClient";
 import nunjucks from "nunjucks";
@@ -118,7 +114,6 @@ const develop = async (evt: Parameters<Handler>[0]) => {
     useNative,
     deploymentName,
   } = zArgs.parse(evt);
-  console.log("running mission", missionUuid);
   const root = getMissionPath(missionUuid);
   fs.mkdirSync(root, { recursive: true });
   const cxn = drizzle();
@@ -153,7 +148,8 @@ const develop = async (evt: Parameters<Handler>[0]) => {
           functionArgs: missionSteps.functionArgs,
         })
         .from(missionSteps)
-        .orderBy(desc(missionSteps.executionDate));
+        .orderBy(asc(missionSteps.executionDate))
+        .where(eq(missionSteps.missionUuid, missionUuid));
       const chatHistory = previousMissionSteps.flatMap((step) => [
         {
           role: "assistant" as const,
@@ -271,14 +267,6 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         )}`;
         break;
       }
-      if (!/^{.*}$/.test(generation)) {
-        finalOutput = `Mission failed due to an Model Response error: \`${generation}\` is not a valid JSON.\nChat History: ${JSON.stringify(
-          chatHistory,
-          null,
-          2
-        )}`;
-        break;
-      }
       const generationJson = /^{.*}$/.test(generation)
         ? JSON.parse(generation)
         : {
@@ -293,16 +281,15 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         break;
       }
       const { name: functionName, arguments: functionArgs } = parsed.data;
-      const [{ stepUuid }] = await cxn
-        .insert(missionSteps)
-        .values({
-          uuid: v4(),
-          missionUuid,
-          executionDate: new Date(),
-          functionName,
-          functionArgs,
-        })
-        .returning({ stepUuid: missionSteps.uuid });
+      const stepUuid = v4();
+      await cxn.insert(missionSteps).values({
+        uuid: stepUuid,
+        missionUuid,
+        executionDate: new Date(),
+        functionName,
+        functionArgs,
+      });
+      // .returning({ stepUuid: missionSteps.uuid });
 
       const invokeTool = async ({
         api,
@@ -329,13 +316,15 @@ const develop = async (evt: Parameters<Handler>[0]) => {
           .from(tokens)
           .where(eq(tokens.domain, url.host));
         if (token) {
-          headers.Authorization = `Bearer ${token}`;
+          headers.Authorization = `Bearer ${token.token}`;
         }
         const responseHandler = async (r: Response): Promise<string> => {
           if (!r.ok) {
             const text = await r.text();
             throw new Error(
-              `${method} request to ${api} failed (${r.status}): ${text}`
+              `${method} request to ${url.toString()} failed (${
+                r.status
+              }): ${text}`
             );
           }
           if (r.headers.get("Content-Type")?.startsWith("application/json")) {
@@ -431,7 +420,6 @@ ${allEvents.map((evt) => `- [${evt.status}] - ${evt.details}`).join("\n")}`;
     })
     .where(eq(missions.uuid, missionUuid));
   await cxn.end();
-  console.log("Ended development cycle");
 };
 
 export default develop;

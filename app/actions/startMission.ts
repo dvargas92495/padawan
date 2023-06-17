@@ -13,7 +13,6 @@ const zData = z.object({
 });
 
 const startMission = async (data: FormData) => {
-  console.log("start mission", new Date().valueOf());
   const { owner, repo, issue, label } = zData.parse(
     Object.fromEntries(data.entries())
   );
@@ -25,7 +24,7 @@ const startMission = async (data: FormData) => {
     startDate: new Date(),
   });
   await cxn.end();
-  await fetch(`http://localhost:3001/develop`, {
+  await fetch(`${process.env.API_URL}/develop`, {
     method: "POST",
     body: JSON.stringify({
       owner,
@@ -34,7 +33,7 @@ const startMission = async (data: FormData) => {
       type: "User",
       missionUuid,
       useNative: true,
-      maxSteps: 2,
+      maxSteps: 3,
     }),
   });
   redirect(`/missions/${missionUuid}`);

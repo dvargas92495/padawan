@@ -14,6 +14,7 @@ import { v4 } from "uuid";
 import format from "date-fns/format";
 import addSeconds from "date-fns/addSeconds";
 import differenceInMilliseconds from "date-fns/differenceInMilliseconds";
+import ngrok from "ngrok";
 dotenv.config();
 
 const debug = debugMod("api");
@@ -355,7 +356,25 @@ const api = async () => {
   });
   app.listen(port, () => {
     console.log(`API server listening on port ${port}...`);
-    spawn("npm", ["run", "dev"], { stdio: "inherit" });
+    const out = spawn(
+      "npm",
+      ["run", "dev"]
+      // { stdio: "inherit" }
+    );
+    out.stdout.on("data", (data) => {
+      const message = data.toString();
+      process.stdout.write(message);
+      if (message.includes("ready started server on")) {
+        ngrok
+          .connect({
+            subdomain: "vargas",
+            addr: 3000,
+          })
+          .then((url) => {
+            console.log(`Public URL: ${url}`);
+          });
+      }
+    });
   });
 };
 

@@ -7,6 +7,9 @@ import deleteMission from "app/actions/deleteMission";
 import getMission from "app/actions/getMission";
 import Typography from "@mui/material/Typography";
 import Link from "next/link";
+import List from "@mui/material/List";
+import ListItem from "@mui/material/ListItem";
+import ListItemText from "@mui/material/ListItemText";
 
 const REFRESH_INTERVAL = 1000 * 5;
 
@@ -20,24 +23,25 @@ const PadawanMissionStep = ({
   index: number;
 }) => {
   return (
-    <Paper elevation={3} sx={{ my: 1, p: 4 }}>
-      <Typography variant={"h5"}>Step {index + 1}</Typography>
-      {!step ? (
-        <Typography variant="h6">Failed to run</Typography>
-      ) : (
-        <>
-          <Typography variant="h6">
-            {step.functionName} -{" "}
-            <code>{JSON.stringify(step.functionArgs)}</code>
-          </Typography>
+    <Paper elevation={3} sx={{ p: 4 }}>
+      <Typography variant={"h5"}>
+        Step {index + 1} - {step.functionName}
+      </Typography>
+      <List>
+        {Object.entries(JSON.parse(step.functionArgs)).map(([key, value]) => (
+          <ListItem key={key}>
+            <ListItemText primary={`${key}: ${value}`} />
+          </ListItem>
+        ))}
+      </List>
 
-          <Typography variant="subtitle1">
-            Executed on {new Date(step.executionDate).toLocaleString()}.
-            Observation:
-          </Typography>
-          <Typography variant="subtitle1">{step.observation}</Typography>
-        </>
-      )}
+      <Typography variant="subtitle1">
+        Executed on {new Date(step.executionDate).toLocaleString()}.
+        Observation:
+      </Typography>
+      <Typography variant="subtitle1" sx={{ whiteSpace: "pre-wrap" }}>
+        {step.observation}
+      </Typography>
     </Paper>
   );
 };
@@ -86,7 +90,13 @@ const MissionPage = ({ params }: { params: { uuid: string } }) => {
               {Math.floor((nextRefresh.valueOf() - now.valueOf()) / 1000)}
             </Typography>
           )}
-          <Box flexGrow={1} display={"flex"} flexDirection={"column"} gap={8}>
+          <Box
+            flexGrow={1}
+            display={"flex"}
+            flexDirection={"column"}
+            gap={8}
+            marginTop={4}
+          >
             {mission.steps.map((step, index) => (
               <PadawanMissionStep step={step} key={index} index={index} />
             ))}
