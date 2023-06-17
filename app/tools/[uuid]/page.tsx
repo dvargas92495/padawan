@@ -18,15 +18,19 @@ import Typography from "@mui/material/Typography";
 import Dialog from "@mui/material/Dialog";
 import DialogTitle from "@mui/material/DialogTitle";
 import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
 import DialogActions from "@mui/material/DialogActions";
 import Select from "@mui/material/Select";
+import AddIcon from "@mui/icons-material/Add";
 import { PARAMETER_TYPES } from "scripts/schema";
 import MenuItem from "@mui/material/MenuItem";
 import updateToolParameter from "app/actions/updateToolParameter";
 import updateToolFormat from "app/actions/updateToolFormat";
 import type { Variant } from "@mui/material/styles/createTypography";
 import updateToolApi from "app/actions/updateToolApi";
+import createToolParameter from "app/actions/createToolParameter";
+import updateToolDescription from "app/actions/updateToolDescription";
+import FormLabel from "@mui/material/FormLabel";
+import testTool from "app/actions/testTool";
 
 const EditableField = ({
   label,
@@ -43,7 +47,7 @@ const EditableField = ({
 }) => {
   const [isEdit, setIsEditing] = React.useState(false);
   return isEdit ? (
-    <form action={updateAction}>
+    <Box component={"form"} marginBottom={4} action={updateAction}>
       <input type="hidden" name="uuid" value={uuid} />
       <TextField
         name={label.toLowerCase()}
@@ -63,15 +67,26 @@ const EditableField = ({
           ),
         }}
       />
-    </form>
+    </Box>
   ) : (
-    <Typography
-      variant={variant}
-      sx={{ cursor: "pointer", "&:hover": { bgcolor: "#eeeeee" } }}
-      onClick={() => setIsEditing(true)}
-    >
-      {defaultValue || "Click to edit"}
-    </Typography>
+    <>
+      {!/^h[1-6]$/.test(variant) && (
+        <FormLabel component="legend" sx={{ marginBottom: 2 }}>
+          {label}
+        </FormLabel>
+      )}
+      <Typography
+        variant={variant}
+        sx={{
+          cursor: "pointer",
+          "&:hover": { bgcolor: "#eeeeee" },
+          marginBottom: 4,
+        }}
+        onClick={() => setIsEditing(true)}
+      >
+        {defaultValue || <i style={{ opacity: 0.5 }}>Click to edit</i>}
+      </Typography>
+    </>
   );
 };
 
@@ -82,6 +97,11 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
   React.useEffect(() => {
     getTool(params).then(setTool);
   }, [setTool, params.uuid]);
+  const [newParameterOpen, setNewParameterOpen] = React.useState(false);
+  const closeNewParameterDialog = React.useCallback(
+    () => setNewParameterOpen(false),
+    [setNewParameterOpen]
+  );
   const [editingParameterUuid, setEditingParameterUuid] = React.useState("");
   const closeEditParameterDialog = React.useCallback(
     () => setEditingParameterUuid(""),
@@ -105,7 +125,13 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
             label={"Name"}
             variant="h2"
           />
-          <Typography variant="body1">{tool.description}</Typography>
+          <EditableField
+            defaultValue={tool.description}
+            uuid={tool.uuid}
+            updateAction={updateToolDescription}
+            label={"Description"}
+            variant="body1"
+          />
           <EditableField
             defaultValue={tool.api}
             uuid={tool.uuid}
@@ -113,7 +139,15 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
             label={"API"}
             variant="body2"
           />
-          <h2>Parameters</h2>
+          <FormLabel component="legend">
+            Parameters
+            <IconButton
+              onClick={() => setNewParameterOpen(true)}
+              sx={{ marginLeft: 4 }}
+            >
+              <AddIcon />
+            </IconButton>
+          </FormLabel>
           <List>
             {tool.parameters.map((parameter) => (
               <ListItemButton
@@ -144,17 +178,50 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
             label={"Format"}
             variant={"body1"}
           />
+          <Dialog open={newParameterOpen} onClose={closeNewParameterDialog}>
+            <form action={createToolParameter}>
+              <DialogTitle>Add Parameter</DialogTitle>
+              <DialogContent>
+                <input type="hidden" name="uuid" value={tool.uuid} />
+                <TextField
+                  name={`name`}
+                  label={"Name"}
+                  sx={{ marginTop: 2, marginRight: 2, flexGrow: 1 }}
+                />
+                <Select
+                  label="Type"
+                  name={`type`}
+                  sx={{ marginTop: 2 }}
+                  defaultValue={PARAMETER_TYPES[0]}
+                >
+                  {PARAMETER_TYPES.map((pt) => (
+                    <MenuItem value={pt} key={pt}>
+                      {pt}
+                    </MenuItem>
+                  ))}
+                </Select>
+                <TextField
+                  name={`description`}
+                  label={"Description"}
+                  fullWidth
+                  multiline
+                  minRows={4}
+                  sx={{ marginTop: 2 }}
+                />
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={closeNewParameterDialog}>Cancel</Button>
+                <Button type={"submit"}>Save</Button>
+              </DialogActions>
+            </form>
+          </Dialog>
           <Dialog
             open={!!editingParameterUuid}
             onClose={closeEditParameterDialog}
           >
             <form action={updateToolParameter}>
-              <DialogTitle>Subscribe</DialogTitle>
+              <DialogTitle>Edit Parameter</DialogTitle>
               <DialogContent>
-                <DialogContentText>
-                  To subscribe to this website, please enter your email address
-                  here. We will send updates occasionally.
-                </DialogContentText>
                 <input type="hidden" name="uuid" value={editingParameterUuid} />
                 <TextField
                   name={`name`}
@@ -178,6 +245,8 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
                   name={`description`}
                   label={"Description"}
                   fullWidth
+                  multiline
+                  minRows={4}
                   sx={{ marginTop: 2 }}
                   defaultValue={editingParameter?.description}
                 />
@@ -196,12 +265,20 @@ const ToolPage = ({ params }: { params: { uuid: string } }) => {
         alignItems={"center"}
         marginTop={4}
       >
-        <form action={deleteTool}>
-          <input type="hidden" name="uuid" value={params.uuid} />
-          <Button variant="contained" color="warning" type="submit">
-            Delete
-          </Button>
-        </form>
+        <Box display={"flex"} gap={2} alignItems={"center"}>
+          <form action={testTool}>
+            <input type="hidden" name="uuid" value={params.uuid} />
+            <Button variant="contained" type={"submit"}>
+              Test
+            </Button>
+          </form>
+          <form action={deleteTool}>
+            <input type="hidden" name="uuid" value={params.uuid} />
+            <Button variant="contained" color="warning" type="submit">
+              Delete
+            </Button>
+          </form>
+        </Box>
         <Button href="/tools">Back</Button>
       </Box>
     </Box>

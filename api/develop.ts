@@ -18,10 +18,10 @@ import {
 } from "scripts/schema";
 import getMissionPath from "src/utils/getMissionPath";
 import crypto from "crypto";
-import { OpenAIApi, Configuration } from "openai";
 import { ChatMessageRole, GenerateResponse } from "vellum-ai/api";
 import vellum from "src/utils/vellumClient";
 import nunjucks from "nunjucks";
+import openai from "src/utils/openai";
 nunjucks.configure({ autoescape: false });
 
 // const GitStatus: Tool = {
@@ -217,11 +217,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
       ]);
 
       const response = useNative
-        ? await new OpenAIApi(
-            new Configuration({
-              apiKey: process.env.OPENAI_API_KEY || "",
-            })
-          )
+        ? await openai()
             .createChatCompletion({
               stop: undefined,
               model: "gpt-3.5-turbo-0613",

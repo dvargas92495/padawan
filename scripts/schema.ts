@@ -15,8 +15,8 @@ export type PARAMETER_TYPE = (typeof PARAMETER_TYPES)[number];
 
 export const tools = pgTable("tools", {
   uuid: uuid("uuid").primaryKey(),
-  name: text("name"),
-  description: text("description"),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
   api: text("api"),
   method: text("method").$type<METHOD>(),
   format: text("format"),

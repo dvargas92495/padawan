@@ -9,7 +9,7 @@ import {
 import drizzle from "src/utils/drizzle";
 import { redirect } from "next/navigation";
 
-const updateToolParameter = async (args: FormData) => {
+const createToolParameter = async (args: FormData) => {
   const uuid = args.get("uuid") as string;
   if (!uuid) return;
   const name = args.get("name");
@@ -28,18 +28,16 @@ const updateToolParameter = async (args: FormData) => {
     throw new Error(`Invalid name: ${paramType}`);
   }
   const cxn = drizzle();
-  const [{ toolUuid }] = await cxn
-    .update(toolParameters)
-    .set({
-      name,
-      description,
-      type: paramType as PARAMETER_TYPE,
-      updatedDate: new Date(),
-    })
-    .where(eq(toolParameters.uuid, uuid))
-    .returning({ toolUuid: toolParameters.toolUuid });
+  await cxn.insert(toolParameters).values({
+    name,
+    description,
+    type: paramType as PARAMETER_TYPE,
+    createdDate: new Date(),
+    updatedDate: new Date(),
+    toolUuid: uuid,
+  });
   await cxn.end();
-  redirect(`/tools/${toolUuid}`);
+  redirect(`/tools/${uuid}`);
 };
 
-export default updateToolParameter;
+export default createToolParameter;
