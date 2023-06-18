@@ -1,9 +1,9 @@
-import createAPIGatewayHandler from "@samepage/backend/createAPIGatewayProxyHandler";
+"use server";
 import { missionSteps, missions } from "scripts/schema";
 import drizzle from "src/utils/drizzle";
 import { eq, sql, desc } from "drizzle-orm";
 
-const logic = async () => {
+const getMissions = async () => {
   const cxn = drizzle();
   const records = await cxn
     .select({
@@ -22,6 +22,6 @@ const logic = async () => {
   };
 };
 
-export type Response = Awaited<ReturnType<typeof logic>>;
+export type GetMissionsResponse = Awaited<ReturnType<typeof getMissions>>;
 
-export default createAPIGatewayHandler(logic);
+export default getMissions;

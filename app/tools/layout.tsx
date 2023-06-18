@@ -24,8 +24,8 @@ const columns: Column[] = [
   { id: "description", label: "Description", width: 200 },
   {
     id: "parameters",
-    label: "Parameters",
-    width: 80,
+    label: "Args",
+    width: 40,
     align: "right",
   },
   { id: "api", label: "API", width: 160 },

@@ -58,6 +58,9 @@ const EditableField = ({
         label={label}
         fullWidth
         defaultValue={defaultValue}
+        sx={{
+          fontFamily,
+        }}
         InputProps={{
           endAdornment: (
             <Box display={"flex"} gap={1} alignItems={"center"}>

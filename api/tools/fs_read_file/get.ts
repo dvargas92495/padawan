@@ -10,10 +10,20 @@ const logic = ({
   filename: string;
   "x-padawan-mission": string;
 }) => {
+  const root = getMissionPath(missionUuid);
+  const fullPath = path.join(root, filename);
+  if (!fs.existsSync(fullPath)) {
+    const ls = fs.readdirSync(root);
+    return {
+      success: false,
+      ls,
+    };
+  }
   return {
     contents: fs
       .readFileSync(path.join(getMissionPath(missionUuid), filename))
       .toString(),
+    success: true,
   };
 };
 

@@ -33,7 +33,7 @@ const startMission = async (data: FormData) => {
       type: "User",
       missionUuid,
       useNative: true,
-      maxSteps: 3,
+      maxSteps: 5,
     }),
   });
   redirect(`/missions/${missionUuid}`);

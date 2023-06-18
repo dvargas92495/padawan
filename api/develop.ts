@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { v4 } from "uuid";
 import type { AxiosError } from "axios";
-import { eq, desc, asc } from "drizzle-orm";
+import { eq, desc, asc, sql } from "drizzle-orm";
 import drizzle from "src/utils/drizzle";
 import {
   METHOD,
@@ -20,6 +20,7 @@ import nunjucks from "nunjucks";
 import openai from "src/utils/openai";
 import getFunction from "src/utils/getFunction";
 import getToolQuery from "src/utils/getToolQuery";
+import { ChatCompletionRequestMessage } from "openai";
 nunjucks.configure({ autoescape: false });
 
 // const GitStatus: Tool = {
@@ -150,22 +151,32 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         .from(missionSteps)
         .orderBy(asc(missionSteps.executionDate))
         .where(eq(missionSteps.missionUuid, missionUuid));
-      const chatHistory = previousMissionSteps.flatMap((step) => [
-        {
-          role: "assistant" as const,
-          function_call: {
-            name: step.functionName,
-            arguments: JSON.stringify(step.functionArgs),
-          },
-          content: "",
-        },
-        {
-          role: "function" as const,
-          content: step.observation,
-          name: step.functionName,
-        },
-      ]);
-
+      const chatHistory = previousMissionSteps.flatMap(
+        (step): ChatCompletionRequestMessage[] => {
+          return step.functionName !== "none"
+            ? [
+                {
+                  role: "assistant" as const,
+                  function_call: {
+                    name: step.functionName,
+                    arguments: JSON.stringify(step.functionArgs),
+                  },
+                  content: "",
+                },
+                {
+                  role: "function" as const,
+                  content: step.observation,
+                  name: step.functionName,
+                },
+              ]
+            : [
+                {
+                  role: "assistant" as const,
+                  content: (step.functionArgs as { content: string }).content,
+                },
+              ];
+        }
+      );
       const response = useNative
         ? await openai()
             .createChatCompletion({
@@ -183,7 +194,8 @@ const develop = async (evt: Parameters<Handler>[0]) => {
                 ...chatHistory,
                 {
                   role: "user",
-                  content: "What is the next action you need to take?",
+                  content:
+                    "Which of the provided functions is the next action you need to take? Please respond as a function_call.",
                 },
               ],
               functions,
@@ -329,11 +341,9 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         const responseHandler = async (r: Response): Promise<string> => {
           if (!r.ok) {
             const text = await r.text();
-            throw new Error(
-              `${method} request to ${url.toString()} failed (${
-                r.status
-              }): ${text}`
-            );
+            return `${method} request to ${url.toString()} failed (${
+              r.status
+            }): ${text}`;
           }
           if (r.headers.get("Content-Type")?.startsWith("application/json")) {
             const data = await r.json();
@@ -364,7 +374,7 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         : await invokeTool({
             body: functionArgs,
             ...apisByName[functionName],
-          }).catch((e) => e.message);
+          });
 
       await cxn
         .update(missionSteps)
@@ -374,6 +384,14 @@ const develop = async (evt: Parameters<Handler>[0]) => {
         })
         .where(eq(missionSteps.uuid, stepUuid));
       iterations++;
+      if (iterations === maxSteps) {
+        finalOutput = `Stopped due to max iterations. ${JSON.stringify(
+          chatHistory,
+          null,
+          2
+        )}`;
+        break;
+      }
     }
   } catch (e) {
     finalOutput = `Mission failed due to an unexpected error: ${

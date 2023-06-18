@@ -29,17 +29,17 @@ const PadawanMissionStep = ({
       </Typography>
       <List>
         {Object.entries(JSON.parse(step.functionArgs)).map(([key, value]) => (
-          <ListItem key={key} sx={{ my: 1, py: 1 }}>
+          <ListItem key={key} sx={{ my: 0, py: 0 }}>
             <ListItemText primary={`${key}: ${value}`} />
           </ListItem>
         ))}
       </List>
 
-      <Typography variant="subtitle1">
+      <Typography variant="subtitle2">
         Executed on {new Date(step.executionDate).toLocaleString()}.
         Observation:
       </Typography>
-      <Typography variant="subtitle1" sx={{ whiteSpace: "pre-wrap" }}>
+      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
         {step.observation}
       </Typography>
     </Paper>

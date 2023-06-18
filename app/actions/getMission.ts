@@ -33,7 +33,7 @@ const getMission = async (args: { uuid: string }) => {
             'observation',${missionSteps.observation},
             'executionDate',${missionSteps.executionDate},
             'endDate',${missionSteps.endDate}
-          )
+          ) ORDER BY execution_date
         ) FILTER (WHERE ${missionSteps.uuid} IS NOT NULL), 
         '[]'::jsonb
       )`,

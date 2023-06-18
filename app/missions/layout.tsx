@@ -9,7 +9,7 @@ import TableRow from "@mui/material/TableRow";
 import TableCell from "@mui/material/TableCell";
 import TableBody from "@mui/material/TableBody";
 import TablePagination from "@mui/material/TablePagination";
-import type { Response } from "../../api/missions/get";
+import getMissions, { GetMissionsResponse } from "app/actions/getMissions";
 import { useRouter } from "next/navigation";
 
 type Column = {
@@ -25,16 +25,12 @@ const columns: Column[] = [
   { id: "steps", label: "Steps", width: 60 },
 ];
 
-async function getMissions() {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/missions`);
-  const json = (await res.json()) as Response;
-  return json.missions;
-}
-
 const MissionLayout = ({ children }: { children: React.ReactNode }) => {
-  const [missions, setMissions] = React.useState<Response["missions"]>([]);
+  const [missions, setMissions] = React.useState<
+    GetMissionsResponse["missions"]
+  >([]);
   React.useEffect(() => {
-    getMissions().then(setMissions);
+    getMissions().then((ms) => setMissions(ms.missions));
   }, [setMissions]);
   const [page, setPage] = React.useState(0);
   const [rowsPerPage, setRowsPerPage] = React.useState(10);
