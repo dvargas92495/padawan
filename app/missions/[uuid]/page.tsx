@@ -29,7 +29,7 @@ const PadawanMissionStep = ({
       </Typography>
       <List>
         {Object.entries(JSON.parse(step.functionArgs)).map(([key, value]) => (
-          <ListItem key={key}>
+          <ListItem key={key} sx={{ my: 1, py: 1 }}>
             <ListItemText primary={`${key}: ${value}`} />
           </ListItem>
         ))}

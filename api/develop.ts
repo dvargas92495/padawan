@@ -252,10 +252,18 @@ const develop = async (evt: Parameters<Handler>[0]) => {
           });
 
       const [result] = response.results;
-      if (result.error || !result.data) {
-        finalOutput = `Mission failed due to a Model error: ${
-          result.error?.message
-        }\nChat History: ${JSON.stringify(chatHistory, null, 2)}`;
+      if (result.error) {
+        const { message: err } = result.error;
+        finalOutput = err.includes(
+          "That model is currently overloaded with other requests"
+        )
+          ? "Mission failed due to an OpenAI API error: Model is overloaded. Please try again later."
+          : `Mission failed due to a Model error: ${
+              result.error.message
+            }\nChat History: ${JSON.stringify(chatHistory, null, 2)}`;
+        break;
+      }
+      if (!result.data) {
         break;
       }
       const generation = result.data.completions[0].text;
